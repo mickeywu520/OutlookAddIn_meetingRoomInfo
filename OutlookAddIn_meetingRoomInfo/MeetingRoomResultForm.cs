@@ -11,6 +11,7 @@ namespace OutlookAddIn_meetingRoomInfo
     public partial class MeetingRoomResultForm : Form
     {
         private List<MeetingRecord> _records;
+        private List<MeetingRoom> _rooms;
         private DateTime _startDate;
         private DateTime _endDate;
         private DataGridView dgvResults;
@@ -19,9 +20,10 @@ namespace OutlookAddIn_meetingRoomInfo
         private Label lblTitle;
         private Label lblSummary;
 
-        public MeetingRoomResultForm(List<MeetingRecord> records, DateTime startDate, DateTime endDate)
+        public MeetingRoomResultForm(List<MeetingRecord> records, DateTime startDate, DateTime endDate, List<MeetingRoom> rooms = null)
         {
             _records = records ?? new List<MeetingRecord>();
+            _rooms = rooms ?? new List<MeetingRoom>();
             _startDate = startDate;
             _endDate = endDate;
             InitializeComponent();
@@ -86,6 +88,19 @@ namespace OutlookAddIn_meetingRoomInfo
             this.AcceptButton = btnClose;
         }
 
+        /// <summary>
+        /// 取得會議室顯示名稱（包含 RoomId 和 Name）
+        /// </summary>
+        private string GetRoomDisplayName(string roomId)
+        {
+            var room = _rooms.FirstOrDefault(r => r.RoomId == roomId);
+            if (room != null)
+            {
+                return $"{room.RoomId} - {room.Name}";
+            }
+            return roomId; // 如果找不到對應的會議室，只回傳 RoomId
+        }
+
         private void LoadData()
         {
             // Setup columns
@@ -97,12 +112,12 @@ namespace OutlookAddIn_meetingRoomInfo
             dgvResults.Columns.Add("Remark", "備註");
 
             // Set column widths
-            dgvResults.Columns["RoomId"].FillWeight = 15;
-            dgvResults.Columns["StartDate"].FillWeight = 18;
-            dgvResults.Columns["EndDate"].FillWeight = 18;
-            dgvResults.Columns["UserName"].FillWeight = 15;
-            dgvResults.Columns["Subject"].FillWeight = 24;
-            dgvResults.Columns["Remark"].FillWeight = 10;
+            dgvResults.Columns["RoomId"].FillWeight = 20;
+            dgvResults.Columns["StartDate"].FillWeight = 16;
+            dgvResults.Columns["EndDate"].FillWeight = 16;
+            dgvResults.Columns["UserName"].FillWeight = 14;
+            dgvResults.Columns["Subject"].FillWeight = 22;
+            dgvResults.Columns["Remark"].FillWeight = 12;
 
             // Sort records
             var sortedRecords = _records.OrderBy(r => r.RoomId)
@@ -115,8 +130,11 @@ namespace OutlookAddIn_meetingRoomInfo
                 DateTime start = DateTime.Parse(record.StartDate);
                 DateTime end = DateTime.Parse(record.EndDate);
 
+                // 取得會議室顯示名稱（ID + 名稱）
+                string roomDisplayName = GetRoomDisplayName(record.RoomId);
+
                 int rowIndex = dgvResults.Rows.Add(
-                    record.RoomId,
+                    roomDisplayName,
                     start.ToString("yyyy/MM/dd HH:mm"),
                     end.ToString("yyyy/MM/dd HH:mm"),
                     record.UserName,

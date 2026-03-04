@@ -26,17 +26,40 @@
     <NoStandardLibraries>false</NoStandardLibraries>
     <RootNamespace>OutlookAddIn_meetingRoomInfo</RootNamespace>
     <AssemblyName>OutlookAddIn_meetingRoomInfo</AssemblyName>
-    <LoadBehavior>3</LoadBehavior>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <DefineConstants>VSTO40;UseOfficeInterop</DefineConstants>
-    <BootstrapperEnabled>true</BootstrapperEnabled>
-    <BootstrapperComponentsLocation>HomeSite</BootstrapperComponentsLocation>
     <ResolveComReferenceSilent>true</ResolveComReferenceSilent>
+    <IsWebBootstrapper>False</IsWebBootstrapper>
+    <BootstrapperEnabled>true</BootstrapperEnabled>
+    <PublishUrl>D:\outlook2016_addin\</PublishUrl>
+    <InstallUrl />
+    <TargetCulture>zh-cht</TargetCulture>
+    <ApplicationVersion>1.0.0.2</ApplicationVersion>
+    <AutoIncrementApplicationRevision>true</AutoIncrementApplicationRevision>
+    <UpdateEnabled>true</UpdateEnabled>
+    <UpdateInterval>7</UpdateInterval>
+    <UpdateIntervalUnits>days</UpdateIntervalUnits>
+    <ProductName>OutlookAddIn_meetingRoomInfo</ProductName>
+    <PublisherName />
+    <SupportUrl />
+    <FriendlyName>OutlookAddIn_meetingRoomInfo</FriendlyName>
+    <OfficeApplicationDescription />
+    <LoadBehavior>3</LoadBehavior>
   </PropertyGroup>
   <ItemGroup>
+    <BootstrapperPackage Include=".NETFramework,Version=v4.7.2">
+      <Visible>False</Visible>
+      <ProductName>Microsoft .NET Framework 4.7.2 %28x86 和 x64%29</ProductName>
+      <Install>true</Install>
+    </BootstrapperPackage>
+    <BootstrapperPackage Include="Microsoft.Net.Framework.3.5.SP1">
+      <Visible>False</Visible>
+      <ProductName>.NET Framework 3.5 SP1</ProductName>
+      <Install>false</Install>
+    </BootstrapperPackage>
     <BootstrapperPackage Include="Microsoft.VSTORuntime.4.0">
       <Visible>False</Visible>
-      <ProductName>Microsoft Visual Studio 2010 Tools for Office Runtime %28x86 and x64%29</ProductName>
+      <ProductName>Microsoft Visual Studio 2010 Tools for Office Runtime %28x86 和 x64%29</ProductName>
       <Install>true</Install>
     </BootstrapperPackage>
   </ItemGroup>
@@ -231,7 +254,11 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="MeetingRecord.cs" />
+    <Compile Include="MeetingRoom.cs" />
     <Compile Include="MeetingRoomResultForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="QuickBookingForm.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="MeetingRoomRibbon.cs">
@@ -295,9 +322,9 @@
     <VisualStudio>
       <FlavorProperties GUID="{BAA0C2D2-18E2-41B9-852F-F413020CAA33}">
         <ProjectProperties HostName="Outlook" HostPackage="{29A7B9D7-A7F1-4328-8EF0-6B2D1A56B2C1}" OfficeVersion="15.0" VstxVersion="4.0" ApplicationType="Outlook" Language="cs" TemplatesPath="" DebugInfoExeName="#Software\Microsoft\Office\16.0\Outlook\InstallRoot\Path#outlook.exe" AddItemTemplatesGuid="{A58A78EB-1C92-4DDD-80CF-E8BD872ABFC4}" />
-        <Host Name="Outlook" GeneratedCodeNamespace="OutlookAddIn_meetingRoomInfo" IconIndex="0">
-          <HostItem Name="MeetingRoomRibbon" Code="MeetingRoomRibbon.cs" CanonicalName="AddIn" Blueprint="MeetingRoomRibbon.Designer.cs" GeneratedCode="MeetingRoomRibbon.Designer.cs" />
-          <HostItem Name="ThisAddIn" Code="ThisAddIn.cs" CanonicalName="AddIn" CanActivate="false" IconIndex="1" Blueprint="ThisAddIn.Designer.xml" GeneratedCode="ThisAddIn.Designer.cs" />
+        <Host Name="Outlook" GeneratedCodeNamespace="OutlookAddIn_meetingRoomInfo" PublishedHash="46CE48C8BF0FD3CB25F55EC01CE9728FBE2638E3" IconIndex="0">
+          <HostItem Name="MeetingRoomRibbon" Code="MeetingRoomRibbon.cs" CanonicalName="AddIn" CanActivate="false" Blueprint="MeetingRoomRibbon.Designer.cs" GeneratedCode="MeetingRoomRibbon.Designer.cs" PublishedHash="8750E6275A967F4CDB50A0BC9EC96B56D815AD39" />
+          <HostItem Name="ThisAddIn" Code="ThisAddIn.cs" CanonicalName="AddIn" CanActivate="false" IconIndex="1" Blueprint="ThisAddIn.Designer.xml" GeneratedCode="ThisAddIn.Designer.cs" PublishedHash="0B053A0CDCC31690A96B960D3E983CC499A15DDC" />
         </Host>
       </FlavorProperties>
     </VisualStudio>

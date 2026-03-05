@@ -131,7 +131,7 @@ namespace OutlookAddIn_meetingRoomInfo
 
             // Book button - 使用 Margin 方式定位，距離右邊和底部各 20px
             btnBook = new Button();
-            btnBook.Text = "預約此時段";
+            btnBook.Text = "預約";
             btnBook.Size = new Size(100, 35);
             btnBook.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             btnBook.Enabled = false;
@@ -254,33 +254,43 @@ namespace OutlookAddIn_meetingRoomInfo
             DateTime slotStart = date.AddHours(hour).AddMinutes(minute);
             DateTime slotEnd = slotStart.AddMinutes(30);
 
-            // Skip past time slots for today
-            if (date.Date == DateTime.Now.Date && slotStart < DateTime.Now)
-            {
-                return;
-            }
+            // 檢查是否為今天且時間已過期
+            bool isExpired = date.Date == DateTime.Now.Date && slotStart < DateTime.Now;
 
-            // Check if this slot is available
-            bool isAvailable = IsTimeSlotAvailable(roomId, slotStart, slotEnd);
+            // Check if this slot is available (只檢查未過期的時段)
+            bool isAvailable = !isExpired && IsTimeSlotAvailable(roomId, slotStart, slotEnd);
 
             string timeRange = string.Format("{0:HH:mm} - {1:HH:mm}", slotStart, slotEnd);
-            string status = isAvailable ? "可預約" : "已占用";
             string duration = "30分鐘";
 
-            // 查找預約人名稱和會議主題
+            // 查找預約人名稱和會議主題（無論是否過期，都要查詢預約資訊）
             string bookerName = "";
             string subject = "";
-            if (!isAvailable)
+            string status;
+
+            // 先查詢是否有預約記錄
+            var booking = _allRecords.FirstOrDefault(r =>
+                r.RoomId == roomId &&
+                DateTime.Parse(r.StartDate).Date == date.Date &&
+                slotStart < DateTime.Parse(r.EndDate) && slotEnd > DateTime.Parse(r.StartDate));
+            
+            if (booking != null)
             {
-                var booking = _allRecords.FirstOrDefault(r =>
-                    r.RoomId == roomId &&
-                    DateTime.Parse(r.StartDate).Date == date.Date &&
-                    slotStart < DateTime.Parse(r.EndDate) && slotEnd > DateTime.Parse(r.StartDate));
-                if (booking != null)
-                {
-                    bookerName = booking.UserName ?? "";
-                    subject = booking.Subject ?? "";
-                }
+                bookerName = booking.UserName ?? "";
+                subject = booking.Subject ?? "";
+            }
+
+            if (isExpired)
+            {
+                status = "已逾時";
+            }
+            else if (isAvailable)
+            {
+                status = "可預約";
+            }
+            else
+            {
+                status = "已占用";
             }
 
             int rowIndex = dgvAvailableSlots.Rows.Add(timeRange, status, bookerName, subject, duration);
@@ -291,11 +301,17 @@ namespace OutlookAddIn_meetingRoomInfo
                 RoomId = roomId,
                 StartTime = slotStart,
                 EndTime = slotEnd,
-                IsAvailable = isAvailable
+                IsAvailable = isAvailable && !isExpired
             };
 
             // Color coding
-            if (isAvailable)
+            if (isExpired)
+            {
+                // 已逾時 - 灰色
+                dgvAvailableSlots.Rows[rowIndex].DefaultCellStyle.BackColor = Color.LightGray;
+                dgvAvailableSlots.Rows[rowIndex].DefaultCellStyle.ForeColor = Color.Gray;
+            }
+            else if (isAvailable)
             {
                 dgvAvailableSlots.Rows[rowIndex].DefaultCellStyle.BackColor = Color.LightGreen;
                 dgvAvailableSlots.Rows[rowIndex].DefaultCellStyle.ForeColor = Color.DarkGreen;

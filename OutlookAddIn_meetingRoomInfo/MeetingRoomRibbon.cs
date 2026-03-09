@@ -95,18 +95,31 @@ namespace OutlookAddIn_meetingRoomInfo
 
                     loadingForm.Close();
 
-                    using (var bookingForm = new QuickBookingForm(records, rooms, (start, end) => FetchMeetingRoomRecords(start, end)))
+                    using (var bookingForm = new QuickBookingForm(
+                        records, 
+                        rooms, 
+                        (start, end) => FetchMeetingRoomRecords(start, end),
+                        (roomId, roomName, startTime, endTime, subject) => BookMeetingRoomAsync(roomId, roomName, startTime, endTime, subject)))
                     {
                         if (bookingForm.ShowDialog() == DialogResult.OK)
                         {
-                            // 使用者選擇了時段，建立新會議
+                            // 使用者選擇了時段且預約成功，建立新會議
                             var outlookApp = Globals.ThisAddIn.Application;
                             var appointment = (Outlook.AppointmentItem)outlookApp.CreateItem(Outlook.OlItemType.olAppointmentItem);
 
                             string roomDisplayName = bookingForm.SelectedRoomDisplayName ?? bookingForm.SelectedRoomId;
                             
                             appointment.MeetingStatus = Outlook.OlMeetingStatus.olMeeting;
-                            //appointment.Subject = string.Format("[會議室預約] {0}", roomDisplayName); // keeping subjetc null
+                            // 使用使用者輸入的會議主旨，並加入標記表示已透過快速預約預約會議室
+                            string subjectPrefix = "[已預約] ";
+                            if (!string.IsNullOrEmpty(bookingForm.MeetingSubject))
+                            {
+                                appointment.Subject = subjectPrefix + bookingForm.MeetingSubject;
+                            }
+                            else
+                            {
+                                appointment.Subject = subjectPrefix + "會議室預約";
+                            }
                             appointment.Location = roomDisplayName;
                             appointment.Start = bookingForm.SelectedStartTime;
                             appointment.End = bookingForm.SelectedEndTime;
@@ -292,6 +305,144 @@ namespace OutlookAddIn_meetingRoomInfo
             using (var resultForm = new MeetingRoomResultForm(records, startDate, endDate, rooms))
             {
                 resultForm.ShowDialog();
+            }
+        }
+
+        /// <summary>
+        /// 立即預約會議室（用於快速預約功能）
+        /// </summary>
+        private async Task<bool> BookMeetingRoomAsync(string roomId, string roomName, DateTime startTime, DateTime endTime, string subject)
+        {
+            try
+            {
+                string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/addRent";
+
+                // 取得使用者資訊
+                string userId = GetCurrentUserId();
+                string userName = GetCurrentUserName();
+                string userExt = GetCurrentUserExt();
+
+                var payload = new
+                {
+                    CaseId = "",
+                    RoomId = roomId,
+                    UserId = userId,
+                    UserName = userName,
+                    StartDate = startTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    EndDate = endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    CreateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    Subject = subject ?? "",
+                    Remark = userExt,
+                    Cancel = false,
+                    MeetingRoom = new
+                    {
+                        RoomId = "",
+                        Name = "",
+                        Type = "",
+                        Disable = false,
+                        Remark = ""
+                    }
+                };
+
+                string jsonPayload = JsonConvert.SerializeObject(payload);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response = await client.PostAsync(apiUrl, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = await response.Content.ReadAsStringAsync();
+                    string cleanedResult = result.Trim().Trim('"');
+                    return cleanedResult == "1";
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[BookMeetingRoomAsync] 預約失敗: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 取得目前使用者 ID
+        /// </summary>
+        private string GetCurrentUserId()
+        {
+            try
+            {
+                var session = Globals.ThisAddIn.Application.Session;
+                var addrEntry = session.CurrentUser.AddressEntry;
+
+                if (addrEntry != null && addrEntry.Type == "EX")
+                {
+                    var exchUser = addrEntry.GetExchangeUser();
+                    if (exchUser != null)
+                    {
+                        string prInitials = "http://schemas.microsoft.com/mapi/proptag/0x3A0A001E";
+                        try
+                        {
+                            string initials = (string)exchUser.PropertyAccessor.GetProperty(prInitials);
+                            return initials?.Trim() ?? "";
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        /// <summary>
+        /// 取得目前使用者名稱
+        /// </summary>
+        private string GetCurrentUserName()
+        {
+            try
+            {
+                return Globals.ThisAddIn.Application.Session.CurrentUser?.Name ?? "";
+            }
+            catch { }
+            return "";
+        }
+
+        /// <summary>
+        /// 取得目前使用者的分機號碼
+        /// </summary>
+        private string GetCurrentUserExt()
+        {
+            try
+            {
+                string userId = GetCurrentUserId();
+                if (string.IsNullOrEmpty(userId))
+                    return $"磐儀#{userId}";
+
+                string apiUrl = "http://192.168.0.13:100/api/User/getAllUserListByEF";
+                HttpResponseMessage response = client.GetAsync(apiUrl).GetAwaiter().GetResult();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    var userListResponse = JsonConvert.DeserializeObject<UserListResponse>(result);
+                    
+                    if (userListResponse?.Data != null)
+                    {
+                        foreach (var user in userListResponse.Data)
+                        {
+                            if (user.UserId == userId && !string.IsNullOrEmpty(user.Ext))
+                            {
+                                return user.Ext;
+                            }
+                        }
+                    }
+                }
+
+                return $"磐儀#{userId}";
+            }
+            catch
+            {
+                return $"磐儀#{GetCurrentUserId()}";
             }
         }
     }

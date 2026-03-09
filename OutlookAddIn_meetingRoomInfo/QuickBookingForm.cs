@@ -25,6 +25,10 @@ namespace OutlookAddIn_meetingRoomInfo
         public string SelectedRoomDisplayName { get; private set; }
         public DateTime SelectedStartTime => _selectedStartTime;
         public DateTime SelectedEndTime => _selectedEndTime;
+        public string MeetingSubject { get; private set; }
+
+        // 用於立即預約會議室的委派
+        private Func<string, string, DateTime, DateTime, string, Task<bool>> _bookRoomFunc;
 
         private ComboBox cmbRooms;
         private DateTimePicker dtpDate;
@@ -38,11 +42,13 @@ namespace OutlookAddIn_meetingRoomInfo
         private Label lblLoading;
 
         public QuickBookingForm(List<MeetingRecord> existingRecords, List<MeetingRoom> rooms, 
-            Func<DateTime, DateTime, Task<List<MeetingRecord>>> fetchRecordsFunc = null)
+            Func<DateTime, DateTime, Task<List<MeetingRecord>>> fetchRecordsFunc = null,
+            Func<string, string, DateTime, DateTime, string, Task<bool>> bookRoomFunc = null)
         {
             _allRecords = existingRecords ?? new List<MeetingRecord>();
             _rooms = rooms ?? new List<MeetingRoom>();
             _fetchRecordsFunc = fetchRecordsFunc;
+            _bookRoomFunc = bookRoomFunc;
             _selectedDate = DateTime.Now;
             InitializeComponent();
             LoadRooms();
@@ -434,7 +440,7 @@ namespace OutlookAddIn_meetingRoomInfo
             }
         }
 
-        private void BtnBook_Click(object sender, EventArgs e)
+        private async void BtnBook_Click(object sender, EventArgs e)
         {
             if (!string.IsNullOrEmpty(_selectedRoomId))
             {
@@ -444,9 +450,126 @@ namespace OutlookAddIn_meetingRoomInfo
                 {
                     SelectedRoomDisplayName = selectedRoom.DisplayName;
                 }
-                
-                this.DialogResult = DialogResult.OK;
-                this.Close();
+
+                // 建立自訂對話框，包含會議主旨輸入框
+                using (var confirmForm = new Form())
+                {
+                    confirmForm.Text = "確認預約";
+                    confirmForm.Size = new Size(450, 250);
+                    confirmForm.StartPosition = FormStartPosition.CenterParent;
+                    confirmForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    confirmForm.MaximizeBox = false;
+                    confirmForm.MinimizeBox = false;
+
+                    // 會議室資訊標籤
+                    var lblInfo = new Label();
+                    lblInfo.Text = string.Format(
+                        "會議室: {0}\n時間: {1:yyyy/MM/dd HH:mm} - {2:HH:mm}",
+                        SelectedRoomDisplayName,
+                        _selectedStartTime,
+                        _selectedEndTime);
+                    lblInfo.Location = new Point(20, 20);
+                    lblInfo.Size = new Size(400, 50);
+                    lblInfo.Font = new Font("Microsoft JhengHei", 10);
+                    confirmForm.Controls.Add(lblInfo);
+
+                    // 會議主旨標籤
+                    var lblSubject = new Label();
+                    lblSubject.Text = "會議主旨:";
+                    lblSubject.Location = new Point(20, 80);
+                    lblSubject.Size = new Size(80, 25);
+                    confirmForm.Controls.Add(lblSubject);
+
+                    // 會議主旨輸入框
+                    var txtSubject = new TextBox();
+                    txtSubject.Location = new Point(110, 78);
+                    txtSubject.Size = new Size(300, 25);
+                    confirmForm.Controls.Add(txtSubject);
+
+                    // 確認按
+                    var btnConfirm = new Button();
+                    btnConfirm.Text = "確認預約";
+                    btnConfirm.DialogResult = DialogResult.Yes;
+                    btnConfirm.Location = new Point(230, 150);
+                    btnConfirm.Size = new Size(90, 30);
+                    confirmForm.Controls.Add(btnConfirm);
+
+                    // 取消按
+                    var btnCancelConfirm = new Button();
+                    btnCancelConfirm.Text = "取消";
+                    btnCancelConfirm.DialogResult = DialogResult.No;
+                    btnCancelConfirm.Location = new Point(330, 150);
+                    btnCancelConfirm.Size = new Size(80, 30);
+                    confirmForm.Controls.Add(btnCancelConfirm);
+
+                    confirmForm.AcceptButton = btnConfirm;
+                    confirmForm.CancelButton = btnCancelConfirm;
+
+                    var result = confirmForm.ShowDialog(this);
+
+                    if (result == DialogResult.Yes)
+                    {
+                        MeetingSubject = txtSubject.Text.Trim();
+
+                        // 如果有提供預約委派，立即呼叫 API 預約
+                        if (_bookRoomFunc != null)
+                        {
+                            this.Cursor = Cursors.WaitCursor;
+                            btnBook.Enabled = false;
+
+                            try
+                            {
+                                bool bookingSuccess = await _bookRoomFunc(
+                                    _selectedRoomId,
+                                    SelectedRoomDisplayName,
+                                    _selectedStartTime,
+                                    _selectedEndTime,
+                                    MeetingSubject);
+
+                                if (bookingSuccess)
+                                {
+                                    MessageBox.Show(
+                                        "會議室預約成功！\n即將開啟 Outlook 會議邀請。",
+                                        "預約成功",
+                                        MessageBoxButtons.OK,
+                                        MessageBoxIcon.Information);
+                                    this.DialogResult = DialogResult.OK;
+                                    this.Close();
+                                }
+                                else
+                                {
+                                    MessageBox.Show(
+                                        "會議室預約失敗，請重新選擇時段或稍後再試。",
+                                        "預約失敗",
+                                        MessageBoxButtons.OK,
+                                        MessageBoxIcon.Warning);
+                                    // 預約失敗，回到 ListView
+                                    RefreshAvailableSlots();
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show(
+                                    $"預約時發生錯誤: {ex.Message}",
+                                    "錯誤",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Error);
+                            }
+                            finally
+                            {
+                                this.Cursor = Cursors.Default;
+                                btnBook.Enabled = true;
+                            }
+                        }
+                        else
+                        {
+                            // 如果沒有提供預約委派，直接關閉表單（舊行為）
+                            this.DialogResult = DialogResult.OK;
+                            this.Close();
+                        }
+                    }
+                    // 如果點擊「取消」或關閉對話框，則回到 ListView，不關閉表單
+                }
             }
         }
 

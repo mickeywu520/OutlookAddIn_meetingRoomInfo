@@ -222,36 +222,49 @@ namespace OutlookAddIn_meetingRoomInfo
                     }
                     else
                     {
-                        // 檢查是否有會議室位置（從 Location 欄位解析）
-                        System.Diagnostics.Debug.WriteLine("[Application_ItemSend] 開始解析 Location...");
-                        string roomId = ExtractRoomIdFromLocation(appointment.Location);
-                        System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 解析結果 RoomId: {roomId ?? "(null)"}");
+                        // 檢查是否已透過快速預約預約過會議室（主旨包含 [已預約] 標記）
+                        bool isAlreadyBooked = !string.IsNullOrEmpty(appointment.Subject) && 
+                                               appointment.Subject.StartsWith("[已預約] ");
                         
-                        if (!string.IsNullOrEmpty(roomId))
+                        if (isAlreadyBooked)
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] RoomId 有效，開始呼叫 BookMeetingRoomSync...");
-                            // 使用同步方式處理預約（因為事件處理器需要立即決定是否取消發送）
-                            bool bookingSuccess = BookMeetingRoomSync(appointment, roomId);
-                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] BookMeetingRoomSync 回傳: {bookingSuccess}");
-                            
-                            if (!bookingSuccess)
-                            {
-                                // 預約失敗，詢問使用者是否仍要發送會議邀請
-                                DialogResult result = MessageBox.Show(
-                                    "會議室預約失敗，是否仍要發送會議邀請？",
-                                    "會議室預約警告",
-                                    MessageBoxButtons.YesNo,
-                                    MessageBoxIcon.Warning);
-                                
-                                if (result == DialogResult.No)
-                                {
-                                    Cancel = true; // 取消發送
-                                }
-                            }
+                            System.Diagnostics.Debug.WriteLine("[Application_ItemSend] 偵測到 [已預約] 標記，跳過自動預約");
+                            // 移除標記，還原原始主旨
+                            appointment.Subject = appointment.Subject.Substring(8); // 移除 "[已預約] "
                         }
                         else
                         {
-                            System.Diagnostics.Debug.WriteLine("[Application_ItemSend] RoomId 為空，跳過預約流程");
+                            // 檢查是否有會議室位置（從 Location 欄位解析）
+                            System.Diagnostics.Debug.WriteLine("[Application_ItemSend] 開始解析 Location...");
+                            string roomId = ExtractRoomIdFromLocation(appointment.Location);
+                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 解析結果 RoomId: {roomId ?? "(null)"}");
+                            
+                            if (!string.IsNullOrEmpty(roomId))
+                            {
+                                System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] RoomId 有效，開始呼叫 BookMeetingRoomSync...");
+                                // 使用同步方式處理預約（因為事件處理器需要立即決定是否取消發送）
+                                bool bookingSuccess = BookMeetingRoomSync(appointment, roomId);
+                                System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] BookMeetingRoomSync 回傳: {bookingSuccess}");
+                                
+                                if (!bookingSuccess)
+                                {
+                                    // 預約失敗，詢問使用者是否仍要發送會議邀請
+                                    DialogResult result = MessageBox.Show(
+                                        "會議室預約失敗，是否仍要發送會議邀請？",
+                                        "會議室預約警告",
+                                        MessageBoxButtons.YesNo,
+                                        MessageBoxIcon.Warning);
+                                    
+                                    if (result == DialogResult.No)
+                                    {
+                                        Cancel = true; // 取消發送
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                System.Diagnostics.Debug.WriteLine("[Application_ItemSend] RoomId 為空，跳過預約流程");
+                            }
                         }
                     }
                 }
@@ -581,11 +594,8 @@ namespace OutlookAddIn_meetingRoomInfo
                     if (cleanedResult == "1")
                     {
                         System.Diagnostics.Debug.WriteLine("[BookMeetingRoomSync] ✓ 預約成功！");
-                        MessageBox.Show(
-                            $"會議室預約成功！\n會議室: {roomId}\n時間: {appointment.Start:yyyy/MM/dd HH:mm} - {appointment.End:HH:mm}",
-                            "預約成功",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
+                        // 移除成功訊息，因為使用者已在 QuickBookingForm 中確認過預約
+                        // 保留失敗時的錯誤處理
                         return true;
                     }
                     else

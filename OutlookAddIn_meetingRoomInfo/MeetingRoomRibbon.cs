@@ -110,16 +110,13 @@ namespace OutlookAddIn_meetingRoomInfo
                             string roomDisplayName = bookingForm.SelectedRoomDisplayName ?? bookingForm.SelectedRoomId;
                             
                             appointment.MeetingStatus = Outlook.OlMeetingStatus.olMeeting;
-                            // 使用使用者輸入的會議主旨，並加入標記表示已透過快速預約預約會議室
-                            string subjectPrefix = "[已預約] ";
+                            // 使用使用者輸入的會議主旨
                             if (!string.IsNullOrEmpty(bookingForm.MeetingSubject))
                             {
-                                appointment.Subject = subjectPrefix + bookingForm.MeetingSubject;
+                                appointment.Subject = bookingForm.MeetingSubject;
                             }
-                            else
-                            {
-                                appointment.Subject = subjectPrefix + "會議室預約";
-                            }
+                            // Location 只使用會議室名稱（不含 RoomId），避免主旨被截斷
+                            // 使用 QuickBookingForm 回傳的顯示名稱或 RoomId 作為 Location
                             appointment.Location = roomDisplayName;
                             appointment.Start = bookingForm.SelectedStartTime;
                             appointment.End = bookingForm.SelectedEndTime;

@@ -222,50 +222,9 @@ namespace OutlookAddIn_meetingRoomInfo
                     }
                     else
                     {
-                        // 檢查是否已透過快速預約預約過會議室（主旨包含 [已預約] 標記）
-                        bool isAlreadyBooked = !string.IsNullOrEmpty(appointment.Subject) && 
-                                               appointment.Subject.StartsWith("[已預約] ");
-                        
-                        if (isAlreadyBooked)
-                        {
-                            System.Diagnostics.Debug.WriteLine("[Application_ItemSend] 偵測到 [已預約] 標記，跳過自動預約");
-                            // 移除標記，還原原始主旨
-                            appointment.Subject = appointment.Subject.Substring(8); // 移除 "[已預約] "
-                        }
-                        else
-                        {
-                            // 檢查是否有會議室位置（從 Location 欄位解析）
-                            System.Diagnostics.Debug.WriteLine("[Application_ItemSend] 開始解析 Location...");
-                            string roomId = ExtractRoomIdFromLocation(appointment.Location);
-                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 解析結果 RoomId: {roomId ?? "(null)"}");
-                            
-                            if (!string.IsNullOrEmpty(roomId))
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] RoomId 有效，開始呼叫 BookMeetingRoomSync...");
-                                // 使用同步方式處理預約（因為事件處理器需要立即決定是否取消發送）
-                                bool bookingSuccess = BookMeetingRoomSync(appointment, roomId);
-                                System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] BookMeetingRoomSync 回傳: {bookingSuccess}");
-                                
-                                if (!bookingSuccess)
-                                {
-                                    // 預約失敗，詢問使用者是否仍要發送會議邀請
-                                    DialogResult result = MessageBox.Show(
-                                        "會議室預約失敗，是否仍要發送會議邀請？",
-                                        "會議室預約警告",
-                                        MessageBoxButtons.YesNo,
-                                        MessageBoxIcon.Warning);
-                                    
-                                    if (result == DialogResult.No)
-                                    {
-                                        Cancel = true; // 取消發送
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                System.Diagnostics.Debug.WriteLine("[Application_ItemSend] RoomId 為空，跳過預約流程");
-                            }
-                        }
+                        // 快速預約流程已在確認時完成預約，此處不再需要自動預約
+                        // 保留取消會議的功能，但移除發送時的自動預約
+                        System.Diagnostics.Debug.WriteLine("[Application_ItemSend] 非取消操作，跳過自動預約（快速預約已在確認時完成）");
                     }
                 }
                 else

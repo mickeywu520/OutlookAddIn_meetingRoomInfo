@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Windows.Forms;
@@ -201,9 +202,25 @@ namespace OutlookAddIn_meetingRoomInfo
                         
                         if (!string.IsNullOrEmpty(roomId))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 開始取消會議室預約，RoomId: {roomId}");
-                            bool cancelSuccess = CancelMeetingRoomSync(appointment, roomId);
-                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] CancelMeetingRoomSync 回傳: {cancelSuccess}");
+                            // 檢查是否為週期性會議
+                            bool isRecurrent = appointment.IsRecurring;
+                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 是否為週期性會議: {isRecurrent}");
+                            
+                            bool cancelSuccess;
+                            if (isRecurrent)
+                            {
+                                // 週期性會議取消
+                                System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 開始取消週期性會議室預約，RoomId: {roomId}");
+                                cancelSuccess = CancelRecurrentMeetingRoomSync(appointment, roomId);
+                            }
+                            else
+                            {
+                                // 單次會議取消
+                                System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 開始取消單次會議室預約，RoomId: {roomId}");
+                                cancelSuccess = CancelMeetingRoomSync(appointment, roomId);
+                            }
+                            
+                            System.Diagnostics.Debug.WriteLine($"[Application_ItemSend] 取消會議室預約結果: {cancelSuccess}");
                             
                             if (!cancelSuccess)
                             {
@@ -483,6 +500,261 @@ namespace OutlookAddIn_meetingRoomInfo
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// 同步方式取消週期性會議室預約
+        /// </summary>
+        private bool CancelRecurrentMeetingRoomSync(Outlook.AppointmentItem appointment, string roomId)
+        {
+            System.Diagnostics.Debug.WriteLine("[CancelRecurrentMeetingRoomSync] ========== 開始取消週期性會議室預約 ==========");
+            try
+            {
+                string userId = GetCurrentUserId();
+                string userName = GetCurrentUserName();
+                string userExt = GetCurrentUserExt();
+                
+                System.Diagnostics.Debug.WriteLine($"[CancelRecurrentMeetingRoomSync] UserId: {userId}, RoomId: {roomId}");
+                
+                // 取得週期模式
+                var recurrencePattern = appointment.GetRecurrencePattern();
+                var exceptions = recurrencePattern.Exceptions;
+                
+                System.Diagnostics.Debug.WriteLine($"[CancelRecurrentMeetingRoomSync] 週期例外數量: {exceptions.Count}");
+                
+                // 取得所有週期日期（排除已刪除的例外）
+                var allDates = new List<DateTime>();
+                DateTime currentDate = recurrencePattern.PatternStartDate;
+                int maxOccurrences = recurrencePattern.Occurrences;
+                
+                // 如果沒有設定 Occurrences，使用 PatternEndDate
+                if (maxOccurrences == 0 && recurrencePattern.PatternEndDate != DateTime.MinValue)
+                {
+                    // 計算到結束日期的所有日期
+                    while (currentDate <= recurrencePattern.PatternEndDate)
+                    {
+                        // 檢查是否為例外（已刪除）
+                        bool isDeleted = false;
+                        foreach (Outlook.Exception ex in exceptions)
+                        {
+                            if (ex.OriginalDate.Date == currentDate.Date && ex.Deleted)
+                            {
+                                isDeleted = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!isDeleted)
+                        {
+                            allDates.Add(currentDate);
+                        }
+                        
+                        // 計算下一個日期
+                        currentDate = GetNextOccurrenceDate(currentDate, recurrencePattern);
+                        if (currentDate == DateTime.MinValue) break;
+                    }
+                }
+                else
+                {
+                    // 使用 Occurrences
+                    int count = 0;
+                    while (count < maxOccurrences)
+                    {
+                        // 檢查是否為例外（已刪除）
+                        bool isDeleted = false;
+                        foreach (Outlook.Exception ex in exceptions)
+                        {
+                            if (ex.OriginalDate.Date == currentDate.Date && ex.Deleted)
+                            {
+                                isDeleted = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!isDeleted)
+                        {
+                            allDates.Add(currentDate);
+                            count++;
+                        }
+                        
+                        // 計算下一個日期
+                        currentDate = GetNextOccurrenceDate(currentDate, recurrencePattern);
+                        if (currentDate == DateTime.MinValue) break;
+                    }
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"[CancelRecurrentMeetingRoomSync] 需要取消的日期數量: {allDates.Count}");
+                
+                if (allDates.Count == 0)
+                {
+                    System.Diagnostics.Debug.WriteLine("[CancelRecurrentMeetingRoomSync] 沒有需要取消的日期");
+                    return true;
+                }
+                
+                // 逐一取消每個日期的預約
+                int successCount = 0;
+                int failCount = 0;
+                var failedDates = new List<DateTime>();
+                
+                foreach (var date in allDates)
+                {
+                    DateTime slotStart = date.Add(appointment.Start.TimeOfDay);
+                    DateTime slotEnd = date.Add(appointment.End.TimeOfDay);
+                    
+                    bool success = CancelSingleMeetingRoomSync(roomId, userId, userName, userExt, slotStart, slotEnd, appointment.Subject);
+                    
+                    if (success)
+                    {
+                        successCount++;
+                    }
+                    else
+                    {
+                        failCount++;
+                        failedDates.Add(date);
+                    }
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"[CancelRecurrentMeetingRoomSync] 取消結果: 成功 {successCount}, 失敗 {failCount}");
+                
+                if (failCount == 0)
+                {
+                    MessageBox.Show(
+                        $"週期性會議室取消預約成功！\n會議室: {roomId}\n共取消 {successCount} 個日期的預約。",
+                        "取消預約成功",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return true;
+                }
+                else
+                {
+                    var failedDatesStr = string.Join("\n", failedDates.Select(d => $"• {d:yyyy/MM/dd}"));
+                    MessageBox.Show(
+                        $"週期性會議室取消預約部分成功。\n成功: {successCount} 個日期\n失敗: {failCount} 個日期\n\n失敗的日期:\n{failedDatesStr}",
+                        "取消預約部分成功",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return successCount > 0; // 只要有成功就回傳 true
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[CancelRecurrentMeetingRoomSync] ✗ 發生例外錯誤: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[CancelRecurrentMeetingRoomSync] StackTrace: {ex.StackTrace}");
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// 取得下一個週期日期
+        /// </summary>
+        private DateTime GetNextOccurrenceDate(DateTime currentDate, Outlook.RecurrencePattern pattern)
+        {
+            try
+            {
+                switch (pattern.RecurrenceType)
+                {
+                    case Outlook.OlRecurrenceType.olRecursDaily:
+                        return currentDate.AddDays(pattern.Interval);
+                        
+                    case Outlook.OlRecurrenceType.olRecursWeekly:
+                        // 每週週期需要考慮 DayOfWeekMask
+                        var dayMask = pattern.DayOfWeekMask;
+                        var daysOfWeek = new List<DayOfWeek>();
+                        
+                        if ((dayMask & Outlook.OlDaysOfWeek.olMonday) != 0) daysOfWeek.Add(DayOfWeek.Monday);
+                        if ((dayMask & Outlook.OlDaysOfWeek.olTuesday) != 0) daysOfWeek.Add(DayOfWeek.Tuesday);
+                        if ((dayMask & Outlook.OlDaysOfWeek.olWednesday) != 0) daysOfWeek.Add(DayOfWeek.Wednesday);
+                        if ((dayMask & Outlook.OlDaysOfWeek.olThursday) != 0) daysOfWeek.Add(DayOfWeek.Thursday);
+                        if ((dayMask & Outlook.OlDaysOfWeek.olFriday) != 0) daysOfWeek.Add(DayOfWeek.Friday);
+                        if ((dayMask & Outlook.OlDaysOfWeek.olSaturday) != 0) daysOfWeek.Add(DayOfWeek.Saturday);
+                        if ((dayMask & Outlook.OlDaysOfWeek.olSunday) != 0) daysOfWeek.Add(DayOfWeek.Sunday);
+                        
+                        if (daysOfWeek.Count == 0)
+                            return currentDate.AddDays(7 * pattern.Interval);
+                        
+                        // 找到下一個符合的星期幾
+                        int currentDayIndex = daysOfWeek.IndexOf(currentDate.DayOfWeek);
+                        if (currentDayIndex >= 0 && currentDayIndex < daysOfWeek.Count - 1)
+                        {
+                            // 同一週還有下一個符合的星期幾
+                            int daysToAdd = daysOfWeek[currentDayIndex + 1] - currentDate.DayOfWeek;
+                            return currentDate.AddDays(daysToAdd);
+                        }
+                        else
+                        {
+                            // 跳到下一週的第一個符合的星期幾
+                            int daysToNextWeek = 7 * pattern.Interval;
+                            int daysToFirstDay = daysOfWeek[0] - currentDate.DayOfWeek;
+                            if (daysToFirstDay <= 0) daysToFirstDay += 7;
+                            return currentDate.AddDays(daysToNextWeek + daysToFirstDay - 7);
+                        }
+                        
+                    case Outlook.OlRecurrenceType.olRecursMonthly:
+                        return currentDate.AddMonths(pattern.Interval);
+                        
+                    default:
+                        return currentDate.AddDays(pattern.Interval);
+                }
+            }
+            catch
+            {
+                return DateTime.MinValue;
+            }
+        }
+        
+        /// <summary>
+        /// 取消單個日期的會議室預約（供週期性取消使用）
+        /// </summary>
+        private bool CancelSingleMeetingRoomSync(string roomId, string userId, string userName, string userExt, 
+            DateTime startTime, DateTime endTime, string subject)
+        {
+            try
+            {
+                // 取得 CaseId
+                string caseId = GetCaseIdFromRentRecord(roomId, userId, startTime, endTime);
+                
+                if (string.IsNullOrEmpty(caseId))
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CancelSingleMeetingRoomSync] 找不到 CaseId: {startTime:yyyy/MM/dd}");
+                    return false;
+                }
+                
+                // 呼叫 editRent 取消預約
+                string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/editRent";
+                
+                var payload = new
+                {
+                    UserName = userName,
+                    CaseId = caseId,
+                    RoomId = roomId,
+                    UserId = userId,
+                    StartDate = startTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    EndDate = endTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    CreateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    Subject = subject ?? "",
+                    Remark = userExt,
+                    Cancel = true
+                };
+                
+                string jsonPayload = JsonConvert.SerializeObject(payload);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                
+                HttpResponseMessage response = client.PostAsync(apiUrl, content).GetAwaiter().GetResult();
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    string cleanedResult = result.Trim().Trim('"');
+                    return cleanedResult == "1";
+                }
+                
+                return false;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[CancelSingleMeetingRoomSync] 錯誤: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>

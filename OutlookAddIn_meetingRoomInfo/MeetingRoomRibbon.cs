@@ -121,6 +121,12 @@ namespace OutlookAddIn_meetingRoomInfo
                             appointment.Start = bookingForm.SelectedStartTime;
                             appointment.End = bookingForm.SelectedEndTime;
 
+                            // 如果是週期性預約，設定 RecurrencePattern
+                            if (bookingForm.IsRecurrentBooking && bookingForm.RecurrenceSettings != null)
+                            {
+                                SetupRecurrencePattern(appointment, bookingForm.RecurrenceSettings);
+                            }
+
                             appointment.Display(false);
                         }
                     }
@@ -440,6 +446,87 @@ namespace OutlookAddIn_meetingRoomInfo
             catch
             {
                 return $"磐儀#{GetCurrentUserId()}";
+            }
+        }
+
+        /// <summary>
+        /// 設定 Outlook 週期性會議模式
+        /// </summary>
+        private void SetupRecurrencePattern(Outlook.AppointmentItem appointment, RecurrenceSettings settings)
+        {
+            try
+            {
+                var recurrencePattern = appointment.GetRecurrencePattern();
+
+                // 設定週期類型
+                switch (settings.Type)
+                {
+                    case RecurrenceType.Daily:
+                        recurrencePattern.RecurrenceType = Outlook.OlRecurrenceType.olRecursDaily;
+                        break;
+                    case RecurrenceType.Weekly:
+                        recurrencePattern.RecurrenceType = Outlook.OlRecurrenceType.olRecursWeekly;
+                        break;
+                    case RecurrenceType.Monthly:
+                        recurrencePattern.RecurrenceType = Outlook.OlRecurrenceType.olRecursMonthly;
+                        break;
+                }
+
+                // 設定間隔
+                recurrencePattern.Interval = settings.Interval;
+
+                // 設定開始日期
+                recurrencePattern.PatternStartDate = settings.StartDate;
+
+                // 設定結束條件
+                if (settings.EndDate.HasValue)
+                {
+                    recurrencePattern.PatternEndDate = settings.EndDate.Value;
+                }
+                else if (settings.Occurrences.HasValue)
+                {
+                    recurrencePattern.Occurrences = settings.Occurrences.Value;
+                }
+
+                // 設定星期幾（僅用於每週週期）
+                if (settings.Type == RecurrenceType.Weekly && settings.DaysOfWeek != null && settings.DaysOfWeek.Count > 0)
+                {
+                    Outlook.OlDaysOfWeek dayMask = 0;
+                    foreach (var day in settings.DaysOfWeek)
+                    {
+                        switch (day)
+                        {
+                            case DayOfWeek.Sunday:
+                                dayMask |= Outlook.OlDaysOfWeek.olSunday;
+                                break;
+                            case DayOfWeek.Monday:
+                                dayMask |= Outlook.OlDaysOfWeek.olMonday;
+                                break;
+                            case DayOfWeek.Tuesday:
+                                dayMask |= Outlook.OlDaysOfWeek.olTuesday;
+                                break;
+                            case DayOfWeek.Wednesday:
+                                dayMask |= Outlook.OlDaysOfWeek.olWednesday;
+                                break;
+                            case DayOfWeek.Thursday:
+                                dayMask |= Outlook.OlDaysOfWeek.olThursday;
+                                break;
+                            case DayOfWeek.Friday:
+                                dayMask |= Outlook.OlDaysOfWeek.olFriday;
+                                break;
+                            case DayOfWeek.Saturday:
+                                dayMask |= Outlook.OlDaysOfWeek.olSaturday;
+                                break;
+                        }
+                    }
+                    recurrencePattern.DayOfWeekMask = dayMask;
+                }
+
+                System.Diagnostics.Debug.WriteLine("[SetupRecurrencePattern] 週期性設定完成");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[SetupRecurrencePattern] 設定週期性失敗: {ex.Message}");
             }
         }
     }

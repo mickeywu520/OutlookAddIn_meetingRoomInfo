@@ -34,7 +34,7 @@
     <PublishUrl>D:\outlook2016_addin\</PublishUrl>
     <InstallUrl />
     <TargetCulture>zh-cht</TargetCulture>
-    <ApplicationVersion>1.0.0.3</ApplicationVersion>
+    <ApplicationVersion>1.0.0.4</ApplicationVersion>
     <AutoIncrementApplicationRevision>true</AutoIncrementApplicationRevision>
     <UpdateEnabled>true</UpdateEnabled>
     <UpdateInterval>7</UpdateInterval>
@@ -261,6 +261,7 @@
     <Compile Include="QuickBookingForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="RecurrenceSettings.cs" />
     <Compile Include="MeetingRoomRibbon.cs">
       <SubType>Component</SubType>
     </Compile>

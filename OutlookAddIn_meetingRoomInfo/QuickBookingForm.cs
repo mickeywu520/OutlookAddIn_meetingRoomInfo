@@ -178,17 +178,25 @@ namespace OutlookAddIn_meetingRoomInfo
             // =============================================
             // 內容 Panel（DockStyle.Fill，填滿剩餘空間）
             // =============================================
-            Panel contentPanel = new Panel();
+            TableLayoutPanel contentPanel = new TableLayoutPanel();
             contentPanel.Dock = DockStyle.Fill;
             contentPanel.Padding = new Padding(10);
+            contentPanel.RowCount = 2;
+            contentPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            contentPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             tabSingle.Controls.Add(contentPanel);
+
+            // 上方控制項的容器
+            Panel controlsPanel = new Panel();
+            controlsPanel.Dock = DockStyle.Fill;
+            contentPanel.Controls.Add(controlsPanel, 0, 0);
 
             // Room label
             lblRoom = new Label();
             lblRoom.Text = "會議室:";
             lblRoom.Location = new Point(20, 20);
             lblRoom.Size = new Size(80, 25);
-            contentPanel.Controls.Add(lblRoom);
+            controlsPanel.Controls.Add(lblRoom);
 
             // Room combo box
             cmbRooms = new ComboBox();
@@ -196,7 +204,7 @@ namespace OutlookAddIn_meetingRoomInfo
             cmbRooms.Size = new Size(280, 25);
             cmbRooms.DropDownStyle = ComboBoxStyle.DropDownList;
             cmbRooms.SelectedIndexChanged += CmbRooms_SelectedIndexChanged;
-            contentPanel.Controls.Add(cmbRooms);
+            controlsPanel.Controls.Add(cmbRooms);
 
             // Remark label (to show room info)
             lblRemark = new Label();
@@ -204,14 +212,14 @@ namespace OutlookAddIn_meetingRoomInfo
             lblRemark.Size = new Size(400, 25);
             lblRemark.Font = new Font("Microsoft JhengHei", 9, FontStyle.Italic);
             lblRemark.ForeColor = Color.Gray;
-            contentPanel.Controls.Add(lblRemark);
+            controlsPanel.Controls.Add(lblRemark);
 
             // Date label
             lblDate = new Label();
             lblDate.Text = "日期:";
             lblDate.Location = new Point(20, 55);
             lblDate.Size = new Size(50, 25);
-            contentPanel.Controls.Add(lblDate);
+            controlsPanel.Controls.Add(lblDate);
 
             // Date picker
             dtpDate = new DateTimePicker();
@@ -220,20 +228,13 @@ namespace OutlookAddIn_meetingRoomInfo
             dtpDate.Format = DateTimePickerFormat.Short;
             dtpDate.MinDate = DateTime.Now.Date;
             dtpDate.ValueChanged += DtpDate_ValueChanged;
-            contentPanel.Controls.Add(dtpDate);
+            controlsPanel.Controls.Add(dtpDate);
 
-            // Available slots grid（填滿 contentPanel 剩餘空間）
+            // Available slots grid（填滿第二列）
             dgvAvailableSlots = new DataGridView();
-            dgvAvailableSlots.Location = new Point(20, 90);
-            dgvAvailableSlots.Anchor = AnchorStyles.Top | AnchorStyles.Bottom
-                                     | AnchorStyles.Left | AnchorStyles.Right;
-            /*
-            dgvAvailableSlots.Size = new Size(
-                contentPanel.Width  - 40,
-                contentPanel.Height - 100);
-            */
-            // 修改後 — 給一個合理的固定初始值，表單顯示後 Anchor 自動撐開
-            dgvAvailableSlots.Size = new Size(800, 430);  
+            dgvAvailableSlots.Dock = DockStyle.Fill;
+            //dgvAvailableSlots.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllHeaders;
+            dgvAvailableSlots.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCells;
             dgvAvailableSlots.AllowUserToAddRows    = false;
             dgvAvailableSlots.AllowUserToDeleteRows = false;
             dgvAvailableSlots.ReadOnly              = true;
@@ -243,7 +244,7 @@ namespace OutlookAddIn_meetingRoomInfo
             dgvAvailableSlots.MultiSelect           = true;
             dgvAvailableSlots.SelectionChanged      += DgvAvailableSlots_SelectionChanged;
             dgvAvailableSlots.CellDoubleClick       += DgvAvailableSlots_CellDoubleClick;
-            contentPanel.Controls.Add(dgvAvailableSlots);
+            contentPanel.Controls.Add(dgvAvailableSlots, 0, 1);
 
             // Setup columns
             dgvAvailableSlots.Columns.Add("TimeSlot", "時段");

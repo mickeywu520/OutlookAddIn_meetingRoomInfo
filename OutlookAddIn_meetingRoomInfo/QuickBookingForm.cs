@@ -421,22 +421,31 @@ namespace OutlookAddIn_meetingRoomInfo
 
             var row = dgvAvailableSlots.Rows[e.RowIndex];
             var slotInfo = row.Tag as TimeSlotInfo;
+            if (slotInfo == null) return;
 
-            if (slotInfo != null && slotInfo.IsAvailable)
+            // Select the clicked row but do not perform booking on double-click.
+            // This forces the user to click the "預約" button to complete booking.
+            dgvAvailableSlots.ClearSelection();
+            row.Selected = true;
+
+            // Update selection-dependent state
+            DgvAvailableSlots_SelectionChanged(dgvAvailableSlots, EventArgs.Empty);
+
+            if (slotInfo.IsAvailable)
             {
-                _selectedRoomId = slotInfo.RoomId;
-                _selectedStartTime = slotInfo.StartTime;
-                _selectedEndTime = slotInfo.EndTime;
-                
-                // Get the display name from current selection
-                var selectedRoom = cmbRooms.SelectedItem as RoomComboItem;
-                if (selectedRoom != null)
-                {
-                    SelectedRoomDisplayName = selectedRoom.DisplayName;
-                }
-                
-                this.DialogResult = DialogResult.OK;
-                this.Close();
+                MessageBox.Show(
+                    "已選擇時段。請按「預約」按鈕以完成預約。",
+                    "提示",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show(
+                    "該時段不可預約，請選擇其他時段或日期。",
+                    "提示",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
             }
         }
 

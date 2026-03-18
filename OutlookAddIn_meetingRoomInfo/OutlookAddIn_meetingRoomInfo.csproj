@@ -34,7 +34,7 @@
     <PublishUrl>D:\outlook2016_addin\</PublishUrl>
     <InstallUrl />
     <TargetCulture>zh-cht</TargetCulture>
-    <ApplicationVersion>1.0.0.3</ApplicationVersion>
+    <ApplicationVersion>1.0.0.4</ApplicationVersion>
     <AutoIncrementApplicationRevision>true</AutoIncrementApplicationRevision>
     <UpdateEnabled>true</UpdateEnabled>
     <UpdateInterval>7</UpdateInterval>
@@ -309,10 +309,10 @@
     <SignManifests>true</SignManifests>
   </PropertyGroup>
   <PropertyGroup>
-    <ManifestKeyFile>OutlookAddIn_meetingRoomInfo_TemporaryKey.pfx</ManifestKeyFile>
+    <ManifestKeyFile>OutlookAddIn_meetingRoomInfo_1_TemporaryKey.pfx</ManifestKeyFile>
   </PropertyGroup>
   <PropertyGroup>
-    <ManifestCertificateThumbprint>AD17EA90873D2AB16E64BF2315438B3B370F3F1E</ManifestCertificateThumbprint>
+    <ManifestCertificateThumbprint>011C79C5B9C2668C56965E39930C31BCB3D7ED3C</ManifestCertificateThumbprint>
   </PropertyGroup>
   <!-- Include the build rules for a C# project. -->
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

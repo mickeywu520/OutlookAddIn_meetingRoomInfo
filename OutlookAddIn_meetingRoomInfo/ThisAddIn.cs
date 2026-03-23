@@ -11,10 +11,14 @@ namespace OutlookAddIn_meetingRoomInfo
     public partial class ThisAddIn
     {
         private Outlook.Inspectors _inspectors;
+        private Outlook.Items _calendarItems;
         private static readonly HttpClient client = new HttpClient();
 
         // Ribbon 執行個體
         private MeetingRoomRibbon _meetingRoomRibbon;
+
+        // 會議時間變更監聽器
+        private AppointmentMonitor _appointmentMonitor;
 
         private void AccessContacts(string findLastName)
         {
@@ -79,13 +83,57 @@ namespace OutlookAddIn_meetingRoomInfo
             // 建立 Ribbon 執行個體
             _meetingRoomRibbon = new MeetingRoomRibbon();
 
+            // 建立會議時間監聽器
+            _appointmentMonitor = new AppointmentMonitor(this);
+
+            // 註冊日曆資料夾監聽
+            RegisterCalendarItemsMonitor();
+
             // 監聽會議項目的發送事件
             this.Application.ItemSend += new Outlook.ApplicationEvents_11_ItemSendEventHandler(Application_ItemSend);
             System.Diagnostics.Debug.WriteLine("2 -------- ThisAddIn_Startup");
             string windowsUserName = Environment.UserName;
             System.Diagnostics.Debug.WriteLine("3 -------- windowsUserName : " + windowsUserName);
-            //string fullUserName = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
-            //System.Diagnostics.Debug.WriteLine("4 -------- fullUserName : " + fullUserName);
+        }
+
+        /// <summary>
+        /// 註冊日曆資料夾的項目變更監聽
+        /// </summary>
+        private void RegisterCalendarItemsMonitor()
+        {
+            try
+            {
+                var session = this.Application.Session;
+                var calendarFolder = session.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+                _calendarItems = calendarFolder.Items;
+
+                _calendarItems.ItemChange += new Outlook.ItemsEvents_ItemChangeEventHandler(CalendarItems_ItemChange);
+
+                System.Diagnostics.Debug.WriteLine("[ThisAddIn] 已註冊日曆資料夾監聽");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ThisAddIn] 註冊日曆監聽失敗: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 日曆項目變更事件處理（外部同步或其他裝置修改）
+        /// </summary>
+        private void CalendarItems_ItemChange(object Item)
+        {
+            try
+            {
+                if (Item is Outlook.AppointmentItem appointment)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ThisAddIn] CalendarItems_ItemChange: {appointment.Subject}");
+                    _appointmentMonitor.HandleCalendarItemChange(appointment);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ThisAddIn] CalendarItems_ItemChange 錯誤: {ex.Message}");
+            }
         }
 
         private void Inspectors_NewInspector(Outlook.Inspector Inspector)
@@ -98,6 +146,10 @@ namespace OutlookAddIn_meetingRoomInfo
                     // 開啟新會議時的處理（目前無需自動查詢
                     //AccessContacts("mickey"); // test get current user details contacts
                 }
+
+                // 註冊時間變更監聽
+                _appointmentMonitor.RegisterInspector(Inspector);
+                System.Diagnostics.Debug.WriteLine($"[ThisAddIn] 已註冊 Inspector 監聽");
             }
         }
 
@@ -583,7 +635,7 @@ namespace OutlookAddIn_meetingRoomInfo
         /// <summary>
         /// 取得目前使用者 ID（從 Outlook 使用者「縮寫」欄位讀取員工編號）
         /// </summary>
-        private string GetCurrentUserId()
+        public string GetCurrentUserId()
         {
             try
             {
@@ -626,7 +678,7 @@ namespace OutlookAddIn_meetingRoomInfo
         /// <summary>
         /// 取得目前使用者名稱
         /// </summary>
-        private string GetCurrentUserName()
+        public string GetCurrentUserName()
         {
             try
             {
@@ -647,7 +699,7 @@ namespace OutlookAddIn_meetingRoomInfo
         /// <summary>
         /// 取得目前使用者的分機號碼 (Ext) - 從 User API 查詢
         /// </summary>
-        private string GetCurrentUserExt()
+        public string GetCurrentUserExt()
         {
             try
             {
@@ -718,7 +770,51 @@ namespace OutlookAddIn_meetingRoomInfo
             }
         }
 
-        private void ThisAddIn_Shutdown(object sender, System.EventArgs e) { }
+        private void ThisAddIn_Shutdown(object sender, System.EventArgs e)
+        {
+            // 解除日曆監聽
+            if (_calendarItems != null)
+            {
+                try
+                {
+                    _calendarItems.ItemChange -= CalendarItems_ItemChange;
+                }
+                catch { }
+            }
+
+            // 解除 Inspector 監聽
+            if (_inspectors != null)
+            {
+                try
+                {
+                    _inspectors.NewInspector -= Inspectors_NewInspector;
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>
+        /// 儲存 MeetingRoomId 到 Appointment 的 UserProperties
+        /// </summary>
+        public void SaveMeetingRoomId(Outlook.AppointmentItem appointment, string roomId)
+        {
+            try
+            {
+                var userProps = appointment.UserProperties;
+                var roomIdProp = userProps.Find("MeetingRoomId", false);
+                if (roomIdProp == null)
+                {
+                    roomIdProp = userProps.Add("MeetingRoomId", Outlook.OlUserPropertyType.olText, false, null);
+                }
+                roomIdProp.Value = roomId;
+                appointment.Save();
+                System.Diagnostics.Debug.WriteLine($"[ThisAddIn] 已儲存 MeetingRoomId: {roomId}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ThisAddIn] 儲存 MeetingRoomId 失敗: {ex.Message}");
+            }
+        }
 
         #region VSTO generated code
         private void InternalStartup()

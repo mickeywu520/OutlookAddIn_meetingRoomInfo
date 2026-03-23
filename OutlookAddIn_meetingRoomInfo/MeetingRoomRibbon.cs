@@ -121,6 +121,9 @@ namespace OutlookAddIn_meetingRoomInfo
                             appointment.Start = bookingForm.SelectedStartTime;
                             appointment.End = bookingForm.SelectedEndTime;
 
+                            // 儲存 RoomId 到 Appointment UserProperties，供後續時間變更偵測使用
+                            Globals.ThisAddIn.SaveMeetingRoomId(appointment, bookingForm.SelectedRoomId);
+
                             appointment.Display(false);
                         }
                     }

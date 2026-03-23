@@ -34,7 +34,7 @@
     <PublishUrl>D:\outlook2016_addin\</PublishUrl>
     <InstallUrl />
     <TargetCulture>zh-cht</TargetCulture>
-    <ApplicationVersion>1.0.0.4</ApplicationVersion>
+    <ApplicationVersion>1.0.0.5</ApplicationVersion>
     <AutoIncrementApplicationRevision>true</AutoIncrementApplicationRevision>
     <UpdateEnabled>true</UpdateEnabled>
     <UpdateInterval>7</UpdateInterval>
@@ -249,7 +249,11 @@
     The "AppDesigner" element specifies the directory where the application properties files
     can be found.
   -->
-  <ItemGroup>
+    <ItemGroup>
+    <Compile Include="AppointmentMonitor.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="AppointmentSnapshot.cs" />
     <Compile Include="DateRangeForm.cs">
       <SubType>Form</SubType>
     </Compile>

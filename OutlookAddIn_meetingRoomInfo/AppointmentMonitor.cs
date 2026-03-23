@@ -173,6 +173,10 @@ namespace OutlookAddIn_meetingRoomInfo
             {
                 string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/getRentRecord";
 
+                System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] 檢查會議室: {roomId}");
+                System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] 查詢時間範圍: {start:yyyy-MM-dd HH:mm} - {end:HH:mm}");
+                System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] UTC時間: {start.ToUniversalTime():yyyy-MM-dd HH:mm:ss} - {end.ToUniversalTime():HH:mm:ss}");
+
                 var payload = new
                 {
                     CaseId = "",
@@ -188,6 +192,8 @@ namespace OutlookAddIn_meetingRoomInfo
                 };
 
                 string jsonPayload = JsonConvert.SerializeObject(payload);
+                System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] Request JSON: {jsonPayload}");
+
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
                 HttpResponseMessage response = await client.PostAsync(apiUrl, content);
@@ -195,13 +201,50 @@ namespace OutlookAddIn_meetingRoomInfo
                 if (response.IsSuccessStatusCode)
                 {
                     string result = await response.Content.ReadAsStringAsync();
+                    System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] Response: {result}");
+
                     var records = JsonConvert.DeserializeObject<List<RentRecord>>(result);
 
-                    if (records != null && records.Any(r => !r.Cancel))
+                    if (records != null && records.Count > 0)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 偵測到衝突: {records.Count} 筆預約");
-                        return true;
+                        System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] API 回傳 {records.Count}筆記錄:");
+
+                        // 過濾：只檢查相同 RoomId 且時間重疊的記錄
+                        var roomRecords = records.Where(r => 
+                            r.RoomId == roomId && 
+                            !r.Cancel &&
+                            IsTimeOverlap(start, end, r.StartDate, r.EndDate)).ToList();
+
+                        System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] RoomId={roomId} 且時間重疊的記錄: {roomRecords.Count}筆");
+
+                        foreach (var r in records)
+                        {
+                            bool overlaps = IsTimeOverlap(start, end, r.StartDate, r.EndDate);
+                            System.Diagnostics.Debug.WriteLine($"  - CaseId={r.CaseId}, RoomId={r.RoomId}, Start={r.StartDate}, End={r.EndDate}, Cancel={r.Cancel}, 重疊={overlaps}");
+                        }
+
+                        if (roomRecords.Any())
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 偵測到衝突: {roomRecords.Count} 筆預約");
+                            foreach (var r in roomRecords)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"  衝突: {r.UserName} - {r.Subject} ({r.StartDate} - {r.EndDate})");
+                            }
+                            return true;
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] 會議室 {roomId} 在 {start:HH:mm}-{end:HH:mm} 可用");
+                        }
                     }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] API 回傳空列表，會議室可用");
+                    }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] HTTP錯誤: {(int)response.StatusCode} {response.StatusCode}");
                 }
 
                 return false;
@@ -209,6 +252,24 @@ namespace OutlookAddIn_meetingRoomInfo
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] CheckRoomAvailability 錯誤: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 檢查兩個時間範圍是否重疊
+        /// </summary>
+        private bool IsTimeOverlap(DateTime start1, DateTime end1, string start2Str, string end2Str)
+        {
+            try
+            {
+                DateTime start2 = DateTime.Parse(start2Str);
+                DateTime end2 = DateTime.Parse(end2Str);
+
+                return start1 < end2 && end1 > start2;
+            }
+            catch
+            {
                 return false;
             }
         }

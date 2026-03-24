@@ -563,13 +563,19 @@ namespace OutlookAddIn_meetingRoomInfo
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Information);
 
-                        if (OnRestoreCompleted != null)
-                        {
-                            OnRestoreCompleted();
-                        }
+                        // 捕獲回調（表單即將關閉）
+                        var restoreCallback = OnRestoreCompleted;
 
+                        // 先隱藏+關閉表單，避免 Outlook 原生 dialog 彈出時表單還在
+                        this.Hide();
                         this.DialogResult = DialogResult.OK;
                         this.Close();
+
+                        // 表單已關閉後再執行回調（會觸發 appointment.Save → Outlook dialog）
+                        if (restoreCallback != null)
+                        {
+                            restoreCallback();
+                        }
                     }
                     else
                     {
@@ -593,24 +599,33 @@ namespace OutlookAddIn_meetingRoomInfo
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Information);
 
-                        if (OnBookingUpdated != null)
-                        {
-                            // 標記即將更新 Outlook，抑制 PropertyChange
-                            if (!string.IsNullOrEmpty(AppointmentEntryId))
-                            {
-                                Globals.ThisAddIn.GetAppointmentMonitor()?.MarkUpdatingFromBooking(AppointmentEntryId);
-                            }
+                        // 捕獲所有需要的值（表單即將關閉）
+                        var updateCallback = OnBookingUpdated;
+                        var roomId = _selectedRoomId;
+                        var selectedRoom = cmbRooms.SelectedItem as RoomComboItem;
+                        string roomDisplayName = selectedRoom?.DisplayName ?? _selectedRoomId;
+                        var startTime = _selectedStartTime;
+                        var endTime = _selectedEndTime;
+                        var entryId = AppointmentEntryId;
 
-                            var selectedRoom = cmbRooms.SelectedItem as RoomComboItem;
-                            string roomDisplayName = selectedRoom?.DisplayName ?? _selectedRoomId;
-                            OnBookingUpdated(_selectedRoomId, roomDisplayName, _selectedStartTime, _selectedEndTime);
-
-                            // 抑制清除已移至 AppointmentMonitor.UpdateAppointmentTime 統一管理（延遲 3 秒）
-                            // 不再在此處過早清除，避免非同步事件來不及被攔截
-                        }
-
+                        // 先隱藏+關閉表單，避免 Outlook 原生 dialog 彈出時表單還在
+                        this.Hide();
                         this.DialogResult = DialogResult.OK;
                         this.Close();
+
+                        // 表單已關閉後再執行回調（會觸發 appointment.Save → Outlook dialog）
+                        if (updateCallback != null)
+                        {
+                            // 標記即將更新 Outlook，抑制 PropertyChange
+                            if (!string.IsNullOrEmpty(entryId))
+                            {
+                                Globals.ThisAddIn.GetAppointmentMonitor()?.MarkUpdatingFromBooking(entryId);
+                            }
+
+                            updateCallback(roomId, roomDisplayName, startTime, endTime);
+
+                            // 抑制清除已移至 AppointmentMonitor.UpdateAppointmentTime 統一管理（延遲 3 秒）
+                        }
                     }
                     else
                     {

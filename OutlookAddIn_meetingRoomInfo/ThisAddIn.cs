@@ -807,6 +807,7 @@ namespace OutlookAddIn_meetingRoomInfo
                     roomIdProp = userProps.Add("MeetingRoomId", Outlook.OlUserPropertyType.olText, false, null);
                 }
                 roomIdProp.Value = roomId;
+
                 appointment.Save();
                 System.Diagnostics.Debug.WriteLine($"[ThisAddIn] 已儲存 MeetingRoomId: {roomId}");
             }
@@ -814,6 +815,14 @@ namespace OutlookAddIn_meetingRoomInfo
             {
                 System.Diagnostics.Debug.WriteLine($"[ThisAddIn] 儲存 MeetingRoomId 失敗: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 取得 AppointmentMonitor 實例（供 QuickBookingForm 使用）
+        /// </summary>
+        public AppointmentMonitor GetAppointmentMonitor()
+        {
+            return _appointmentMonitor;
         }
 
         #region VSTO generated code

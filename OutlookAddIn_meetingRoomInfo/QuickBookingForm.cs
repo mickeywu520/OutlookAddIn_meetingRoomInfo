@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
-using System.Windows.Forms;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
+using System.Windows.Forms;
+using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace OutlookAddIn_meetingRoomInfo
 {
@@ -30,6 +33,21 @@ namespace OutlookAddIn_meetingRoomInfo
         // 用於立即預約會議室的委派
         private Func<string, string, DateTime, DateTime, string, Task<bool>> _bookRoomFunc;
 
+        // 更新模式專用
+        private bool _isUpdateMode;
+        private bool _isRestoreMode;
+        private string _oldRoomId;
+        private string _oldCaseId;
+        private string _oldStartDate;
+        private string _oldEndDate;
+        private string _originalSubject;
+
+        // 更新成功後的回調
+        public Action<string, string, DateTime, DateTime> OnBookingUpdated { get; set; }
+        // 還原舊時段後的回調
+        public Action OnRestoreCompleted { get; set; }
+        public string AppointmentEntryId { get; private set; }
+
         private ComboBox cmbRooms;
         private DateTimePicker dtpDate;
         private DataGridView dgvAvailableSlots;
@@ -41,6 +59,8 @@ namespace OutlookAddIn_meetingRoomInfo
         private Label lblRemark;
         private Label lblLoading;
 
+        private static readonly HttpClient client = new HttpClient();
+
         public QuickBookingForm(List<MeetingRecord> existingRecords, List<MeetingRoom> rooms, 
             Func<DateTime, DateTime, Task<List<MeetingRecord>>> fetchRecordsFunc = null,
             Func<string, string, DateTime, DateTime, string, Task<bool>> bookRoomFunc = null)
@@ -50,9 +70,57 @@ namespace OutlookAddIn_meetingRoomInfo
             _fetchRecordsFunc = fetchRecordsFunc;
             _bookRoomFunc = bookRoomFunc;
             _selectedDate = DateTime.Now;
+            _isUpdateMode = false;
             InitializeComponent();
             LoadRooms();
             RefreshAvailableSlots();
+        }
+
+        public QuickBookingForm(List<MeetingRecord> existingRecords, List<MeetingRoom> rooms, bool isUpdateMode,
+            string oldRoomId, string oldCaseId, string oldStartDate, string oldEndDate, string originalSubject,
+            string appointmentEntryId = null,
+            Func<DateTime, DateTime, Task<List<MeetingRecord>>> fetchRecordsFunc = null,
+            Func<string, string, DateTime, DateTime, string, Task<bool>> bookRoomFunc = null)
+        {
+            _allRecords = existingRecords ?? new List<MeetingRecord>();
+            _rooms = rooms ?? new List<MeetingRoom>();
+            _fetchRecordsFunc = fetchRecordsFunc;
+            _bookRoomFunc = bookRoomFunc;
+            _selectedDate = DateTime.Now;
+            _isUpdateMode = isUpdateMode;
+            _oldRoomId = oldRoomId;
+            _oldCaseId = oldCaseId;
+            _oldStartDate = oldStartDate;
+            _oldEndDate = oldEndDate;
+            _originalSubject = originalSubject;
+            AppointmentEntryId = appointmentEntryId;
+            InitializeComponent();
+            if (_isUpdateMode)
+            {
+                this.Text = "選擇新時段";
+                lblTitle.Text = "選擇新時段";
+                btnBook.Text = "預約新時段";
+            }
+            LoadRooms();
+            RefreshAvailableSlots();
+        }
+
+        /// <summary>
+        /// 還原模式 - 重新預約舊時段
+        /// </summary>
+        public QuickBookingForm(List<MeetingRecord> existingRecords, List<MeetingRoom> rooms,
+            string oldRoomId, string oldStartDate, string oldEndDate, string originalSubject,
+            string appointmentEntryId = null)
+            : this(existingRecords, rooms, true, oldRoomId, null, oldStartDate, oldEndDate, originalSubject, appointmentEntryId, null, null)
+        {
+            _isRestoreMode = true;
+            this.Text = "還原舊時段";
+            lblTitle.Text = "還原舊時段";
+            btnBook.Text = "還原";
+            _selectedRoomId = oldRoomId;
+            LoadRooms();
+            RefreshAvailableSlots();
+            RestoreOldTimeSlot();
         }
 
         private void InitializeComponent()
@@ -453,131 +521,444 @@ namespace OutlookAddIn_meetingRoomInfo
         {
             if (!string.IsNullOrEmpty(_selectedRoomId))
             {
-                // Get the display name from current selection
                 var selectedRoom = cmbRooms.SelectedItem as RoomComboItem;
                 if (selectedRoom != null)
                 {
                     SelectedRoomDisplayName = selectedRoom.DisplayName;
                 }
 
-                // 建立自訂對話框，包含會議主旨輸入框
-                using (var confirmForm = new Form())
+                if (_isUpdateMode)
                 {
-                    confirmForm.Text = "確認預約";
-                    confirmForm.Size = new Size(450, 250);
-                    confirmForm.StartPosition = FormStartPosition.CenterParent;
-                    confirmForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-                    confirmForm.MaximizeBox = false;
-                    confirmForm.MinimizeBox = false;
+                    await HandleUpdateMode();
+                }
+                else
+                {
+                    await HandleNewBookingMode();
+                }
+            }
+        }
 
-                    // 會議室資訊標籤
-                    var lblInfo = new Label();
-                    lblInfo.Text = string.Format(
-                        "會議室: {0}\n時間: {1:yyyy/MM/dd HH:mm} - {2:HH:mm}",
-                        SelectedRoomDisplayName,
-                        _selectedStartTime,
-                        _selectedEndTime);
-                    lblInfo.Location = new Point(20, 20);
-                    lblInfo.Size = new Size(400, 50);
-                    lblInfo.Font = new Font("Microsoft JhengHei", 10);
-                    confirmForm.Controls.Add(lblInfo);
+        private async Task HandleUpdateMode()
+        {
+            this.Cursor = Cursors.WaitCursor;
+            btnBook.Enabled = false;
 
-                    // 會議主旨標籤
-                    var lblSubject = new Label();
-                    lblSubject.Text = "會議主旨:";
-                    lblSubject.Location = new Point(20, 80);
-                    lblSubject.Size = new Size(80, 25);
-                    confirmForm.Controls.Add(lblSubject);
+            try
+            {
+                string subjectToUse = !string.IsNullOrEmpty(_originalSubject) ? _originalSubject : "";
+                string userId = GetCurrentUserId();
+                string userName = GetCurrentUserName();
+                string userExt = GetCurrentUserExt();
 
-                    // 會議主旨輸入框
-                    var txtSubject = new TextBox();
-                    txtSubject.Location = new Point(110, 78);
-                    txtSubject.Size = new Size(300, 25);
-                    confirmForm.Controls.Add(txtSubject);
+                if (_isRestoreMode)
+                {
+                    // 還原模式：重新預約舊時段
+                    bool bookingSuccess = await BookNewRoom(userId, userName, userExt, subjectToUse);
 
-                    // 確認按
-                    var btnConfirm = new Button();
-                    btnConfirm.Text = "確認預約";
-                    btnConfirm.DialogResult = DialogResult.Yes;
-                    btnConfirm.Location = new Point(230, 150);
-                    btnConfirm.Size = new Size(90, 30);
-                    confirmForm.Controls.Add(btnConfirm);
-
-                    // 取消按
-                    var btnCancelConfirm = new Button();
-                    btnCancelConfirm.Text = "取消";
-                    btnCancelConfirm.DialogResult = DialogResult.No;
-                    btnCancelConfirm.Location = new Point(330, 150);
-                    btnCancelConfirm.Size = new Size(80, 30);
-                    confirmForm.Controls.Add(btnCancelConfirm);
-
-                    confirmForm.AcceptButton = btnConfirm;
-                    confirmForm.CancelButton = btnCancelConfirm;
-
-                    var result = confirmForm.ShowDialog(this);
-
-                    if (result == DialogResult.Yes)
+                    if (bookingSuccess)
                     {
-                        MeetingSubject = txtSubject.Text.Trim();
+                        MessageBox.Show(
+                            $"已還原為舊時段！\n時間: {_selectedStartTime:yyyy/MM/dd HH:mm} - {_selectedEndTime:HH:mm}",
+                            "還原成功",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
 
-                        // 如果有提供預約委派，立即呼叫 API 預約
-                        if (_bookRoomFunc != null)
+                        if (OnRestoreCompleted != null)
                         {
-                            this.Cursor = Cursors.WaitCursor;
-                            btnBook.Enabled = false;
-
-                            try
-                            {
-                                bool bookingSuccess = await _bookRoomFunc(
-                                    _selectedRoomId,
-                                    SelectedRoomDisplayName,
-                                    _selectedStartTime,
-                                    _selectedEndTime,
-                                    MeetingSubject);
-
-                                if (bookingSuccess)
-                                {
-                                    MessageBox.Show(
-                                        "會議室預約成功！\n即將開啟 Outlook 會議邀請。",
-                                        "預約成功",
-                                        MessageBoxButtons.OK,
-                                        MessageBoxIcon.Information);
-                                    this.DialogResult = DialogResult.OK;
-                                    this.Close();
-                                }
-                                else
-                                {
-                                    MessageBox.Show(
-                                        "會議室預約失敗，請重新選擇時段或稍後再試。",
-                                        "預約失敗",
-                                        MessageBoxButtons.OK,
-                                        MessageBoxIcon.Warning);
-                                    // 預約失敗，回到 ListView
-                                    RefreshAvailableSlots();
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                MessageBox.Show(
-                                    $"預約時發生錯誤: {ex.Message}",
-                                    "錯誤",
-                                    MessageBoxButtons.OK,
-                                    MessageBoxIcon.Error);
-                            }
-                            finally
-                            {
-                                this.Cursor = Cursors.Default;
-                                btnBook.Enabled = true;
-                            }
+                            OnRestoreCompleted();
                         }
-                        else
+
+                        this.DialogResult = DialogResult.OK;
+                        this.Close();
+                    }
+                    else
+                    {
+                        MessageBox.Show(
+                            "還原預約失敗，請稍後再試。",
+                            "還原失敗",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                }
+                else
+                {
+                    // 更新模式：新預約（舊的已經在 AppointmentMonitor 取消了）
+                    bool bookingSuccess = await BookNewRoom(userId, userName, userExt, subjectToUse);
+
+                    if (bookingSuccess)
+                    {
+                        MessageBox.Show(
+                            $"會議室預約已更新！\n新時間: {_selectedStartTime:yyyy/MM/dd HH:mm} - {_selectedEndTime:HH:mm}",
+                            "更新成功",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+
+                        if (OnBookingUpdated != null)
                         {
-                            // 如果沒有提供預約委派，直接關閉表單（舊行為）
-                            this.DialogResult = DialogResult.OK;
-                            this.Close();
+                            // 標記即將更新 Outlook，抑制 PropertyChange
+                            if (!string.IsNullOrEmpty(AppointmentEntryId))
+                            {
+                                Globals.ThisAddIn.GetAppointmentMonitor()?.MarkUpdatingFromBooking(AppointmentEntryId);
+                            }
+
+                            var selectedRoom = cmbRooms.SelectedItem as RoomComboItem;
+                            string roomDisplayName = selectedRoom?.DisplayName ?? _selectedRoomId;
+                            OnBookingUpdated(_selectedRoomId, roomDisplayName, _selectedStartTime, _selectedEndTime);
+
+                            // 抑制清除已移至 AppointmentMonitor.UpdateAppointmentTime 統一管理（延遲 3 秒）
+                            // 不再在此處過早清除，避免非同步事件來不及被攔截
+                        }
+
+                        this.DialogResult = DialogResult.OK;
+                        this.Close();
+                    }
+                    else
+                    {
+                        MessageBox.Show(
+                            "新時段預約失敗，請重新選擇時段或稍後再試。",
+                            "預約失敗",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        RefreshAvailableSlots();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"更新時發生錯誤: {ex.Message}",
+                    "錯誤",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            finally
+            {
+                this.Cursor = Cursors.Default;
+                btnBook.Enabled = true;
+            }
+        }
+
+        /// <summary>
+        /// 自動選中原時間的時段（還原模式用）
+        /// </summary>
+        private void RestoreOldTimeSlot()
+        {
+            if (string.IsNullOrEmpty(_oldStartDate) || string.IsNullOrEmpty(_oldEndDate))
+                return;
+
+            try
+            {
+                DateTime oldStart = DateTime.Parse(_oldStartDate);
+                DateTime oldEnd = DateTime.Parse(_oldEndDate);
+
+                _selectedStartTime = oldStart;
+                _selectedEndTime = oldEnd;
+
+                dtpDate.Value = oldStart.Date;
+
+                foreach (DataGridViewRow row in dgvAvailableSlots.Rows)
+                {
+                    var slotInfo = row.Tag as TimeSlotInfo;
+                    if (slotInfo != null && slotInfo.StartTime == oldStart && slotInfo.EndTime == oldEnd)
+                    {
+                        row.Selected = true;
+                        break;
+                    }
+                }
+
+                btnBook.Enabled = true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] RestoreOldTimeSlot 錯誤: {ex.Message}");
+            }
+        }
+
+        private string GetCurrentUserId()
+        {
+            try
+            {
+                var app = Globals.ThisAddIn.Application;
+                var session = app.Session;
+                var addrEntry = session.CurrentUser.AddressEntry;
+
+                if (addrEntry != null && addrEntry.Type == "EX")
+                {
+                    var exchUser = addrEntry.GetExchangeUser();
+                    if (exchUser != null)
+                    {
+                        string prInitials = "http://schemas.microsoft.com/mapi/proptag/0x3A0A001E";
+                        try
+                        {
+                            string initials = (string)exchUser.PropertyAccessor.GetProperty(prInitials);
+                            return initials?.Trim() ?? "";
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        private string GetCurrentUserName()
+        {
+            try
+            {
+                return Globals.ThisAddIn.Application.Session.CurrentUser?.Name ?? "";
+            }
+            catch { }
+            return "";
+        }
+
+        private string GetCurrentUserExt()
+        {
+            try
+            {
+                string userId = GetCurrentUserId();
+                if (string.IsNullOrEmpty(userId))
+                    return $"磐儀#{userId}";
+
+                string apiUrl = "http://192.168.0.13:100/api/User/getAllUserListByEF";
+                HttpResponseMessage response = client.GetAsync(apiUrl).GetAwaiter().GetResult();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    var userListResponse = JsonConvert.DeserializeObject<UserListResponse>(result);
+
+                    if (userListResponse?.Data != null)
+                    {
+                        foreach (var user in userListResponse.Data)
+                        {
+                            if (user.UserId == userId && !string.IsNullOrEmpty(user.Ext))
+                            {
+                                return user.Ext;
+                            }
                         }
                     }
-                    // 如果點擊「取消」或關閉對話框，則回到 ListView，不關閉表單
+                }
+
+                return $"磐儀#{userId}";
+            }
+            catch
+            {
+                return $"磐儀#{GetCurrentUserId()}";
+            }
+        }
+
+        private async Task<bool> CancelOldBooking(string userId, string userName, string userExt)
+        {
+            try
+            {
+                string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/editRent";
+
+                var payload = new
+                {
+                    UserName = userName,
+                    CaseId = _oldCaseId,
+                    RoomId = _oldRoomId,
+                    UserId = userId,
+                    StartDate = _oldStartDate,
+                    EndDate = _oldEndDate,
+                    CreateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    Subject = _originalSubject ?? "",
+                    Remark = userExt,
+                    Cancel = true
+                };
+
+                string jsonPayload = JsonConvert.SerializeObject(payload);
+                System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] CancelOldBooking Request: {jsonPayload}");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response = await client.PostAsync(apiUrl, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = await response.Content.ReadAsStringAsync();
+                    string cleanedResult = result.Trim().Trim('"');
+                    bool success = cleanedResult == "1";
+                    System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] 取消舊預約: {(success ? "成功" : "失敗")}, Response: {result}");
+                    return success;
+                }
+                else
+                {
+                    string error = await response.Content.ReadAsStringAsync();
+                    System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] 取消舊預約 HTTP錯誤: {(int)response.StatusCode}, {error}");
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] CancelOldBooking 錯誤: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task<bool> BookNewRoom(string userId, string userName, string userExt, string subject)
+        {
+            try
+            {
+                string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/addRent";
+
+                var selectedRoom = cmbRooms.SelectedItem as RoomComboItem;
+                string roomDisplayName = selectedRoom?.DisplayName ?? _selectedRoomId;
+
+                var payload = new
+                {
+                    CaseId = "",
+                    RoomId = _selectedRoomId,
+                    UserId = userId,
+                    UserName = userName,
+                    StartDate = _selectedStartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    EndDate = _selectedEndTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    CreateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    Subject = subject ?? "",
+                    Remark = userExt,
+                    Cancel = false
+                };
+
+                string jsonPayload = JsonConvert.SerializeObject(payload);
+                System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] BookNewRoom Request: {jsonPayload}");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response = await client.PostAsync(apiUrl, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = await response.Content.ReadAsStringAsync();
+                    string cleanedResult = result.Trim().Trim('"');
+                    bool success = cleanedResult == "1";
+                    System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] 新預約: {(success ? "成功" : "失敗")}, Response: {result}");
+                    return success;
+                }
+                else
+                {
+                    string error = await response.Content.ReadAsStringAsync();
+                    System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] 新預約 HTTP錯誤: {(int)response.StatusCode}, {error}");
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[QuickBookingForm] BookNewRoom 錯誤: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task HandleNewBookingMode()
+        {
+            using (var confirmForm = new Form())
+            {
+                confirmForm.Text = "確認預約";
+                confirmForm.Size = new Size(450, 250);
+                confirmForm.StartPosition = FormStartPosition.CenterParent;
+                confirmForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+                confirmForm.MaximizeBox = false;
+                confirmForm.MinimizeBox = false;
+
+                var lblInfo = new Label();
+                lblInfo.Text = string.Format(
+                    "會議室: {0}\n時間: {1:yyyy/MM/dd HH:mm} - {2:HH:mm}",
+                    SelectedRoomDisplayName,
+                    _selectedStartTime,
+                    _selectedEndTime);
+                lblInfo.Location = new Point(20, 20);
+                lblInfo.Size = new Size(400, 50);
+                lblInfo.Font = new Font("Microsoft JhengHei", 10);
+                confirmForm.Controls.Add(lblInfo);
+
+                var lblSubject = new Label();
+                lblSubject.Text = "會議主旨:";
+                lblSubject.Location = new Point(20, 80);
+                lblSubject.Size = new Size(80, 25);
+                confirmForm.Controls.Add(lblSubject);
+
+                var txtSubject = new TextBox();
+                txtSubject.Location = new Point(110, 78);
+                txtSubject.Size = new Size(300, 25);
+                confirmForm.Controls.Add(txtSubject);
+
+                var btnConfirm = new Button();
+                btnConfirm.Text = "確認預約";
+                btnConfirm.DialogResult = DialogResult.Yes;
+                btnConfirm.Location = new Point(230, 150);
+                btnConfirm.Size = new Size(90, 30);
+                confirmForm.Controls.Add(btnConfirm);
+
+                var btnCancelConfirm = new Button();
+                btnCancelConfirm.Text = "取消";
+                btnCancelConfirm.DialogResult = DialogResult.No;
+                btnCancelConfirm.Location = new Point(330, 150);
+                btnCancelConfirm.Size = new Size(80, 30);
+                confirmForm.Controls.Add(btnCancelConfirm);
+
+                confirmForm.AcceptButton = btnConfirm;
+                confirmForm.CancelButton = btnCancelConfirm;
+
+                var result = confirmForm.ShowDialog(this);
+
+                if (result == DialogResult.Yes)
+                {
+                    MeetingSubject = txtSubject.Text.Trim();
+
+                    if (_bookRoomFunc != null)
+                    {
+                        this.Cursor = Cursors.WaitCursor;
+                        btnBook.Enabled = false;
+
+                        try
+                        {
+                            bool bookingSuccess = await _bookRoomFunc(
+                                _selectedRoomId,
+                                SelectedRoomDisplayName,
+                                _selectedStartTime,
+                                _selectedEndTime,
+                                MeetingSubject);
+
+                            if (bookingSuccess)
+                            {
+                                MessageBox.Show(
+                                    "會議室預約成功！\n即將開啟 Outlook 會議邀請。",
+                                    "預約成功",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Information);
+                                this.DialogResult = DialogResult.OK;
+                                this.Close();
+                            }
+                            else
+                            {
+                                MessageBox.Show(
+                                    "會議室預約失敗，請重新選擇時段或稍後再試。",
+                                    "預約失敗",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Warning);
+                                RefreshAvailableSlots();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show(
+                                $"預約時發生錯誤: {ex.Message}",
+                                "錯誤",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Error);
+                        }
+                        finally
+                        {
+                            this.Cursor = Cursors.Default;
+                            btnBook.Enabled = true;
+                        }
+                    }
+                    else
+                    {
+                        this.DialogResult = DialogResult.OK;
+                        this.Close();
+                    }
                 }
             }
         }
@@ -588,6 +969,26 @@ namespace OutlookAddIn_meetingRoomInfo
             public DateTime StartTime { get; set; }
             public DateTime EndTime { get; set; }
             public bool IsAvailable { get; set; }
+        }
+
+        public void SetSelectedDate(DateTime date)
+        {
+            _selectedDate = date;
+            dtpDate.Value = date;
+            RefreshAvailableSlots();
+        }
+
+        public void SetSelectedRoom(string roomId)
+        {
+            for (int i = 0; i < cmbRooms.Items.Count; i++)
+            {
+                var item = cmbRooms.Items[i] as RoomComboItem;
+                if (item != null && item.RoomId == roomId)
+                {
+                    cmbRooms.SelectedIndex = i;
+                    break;
+                }
+            }
         }
 
         private class RoomComboItem

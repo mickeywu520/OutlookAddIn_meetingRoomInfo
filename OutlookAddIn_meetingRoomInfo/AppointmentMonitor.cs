@@ -18,13 +18,34 @@ namespace OutlookAddIn_meetingRoomInfo
         private readonly Dictionary<string, AppointmentSnapshot> _snapshots = new Dictionary<string, AppointmentSnapshot>();
         private readonly HashSet<string> _suppressedItems = new HashSet<string>();
         private readonly Dictionary<string, DateTime> _lastChangeTime = new Dictionary<string, DateTime>();
+        private readonly Dictionary<string, DateTime> _lastUpdateFromBooking = new Dictionary<string, DateTime>();
         private const int DebounceMs = 500;
+        private const int SelfUpdateWindowMs = 5000; // 5秒內視為自己更新（延長以確保回填觸發的非同步事件都能被攔截）
 
         private readonly ThisAddIn _addIn;
 
         public AppointmentMonitor(ThisAddIn addIn)
         {
             _addIn = addIn;
+        }
+
+        /// <summary>
+        /// 標記即將從 QuickBookingForm 更新，之後的 PropertyChange 會被視為自己更新
+        /// </summary>
+        public void MarkUpdatingFromBooking(string entryId)
+        {
+            _suppressedItems.Add(entryId);
+            _lastUpdateFromBooking[entryId] = DateTime.Now;
+            System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] MarkUpdatingFromBooking: {entryId}");
+        }
+
+        /// <summary>
+        /// 標記從 QuickBookingForm 更新完成，解除抑制
+        /// </summary>
+        public void ClearUpdatingFromBooking(string entryId)
+        {
+            _suppressedItems.Remove(entryId);
+            System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] ClearUpdatingFromBooking: {entryId}");
         }
 
         public void RegisterInspector(Outlook.Inspector inspector)
@@ -64,10 +85,23 @@ namespace OutlookAddIn_meetingRoomInfo
                 string entryId = appointment.EntryID;
                 if (string.IsNullOrEmpty(entryId)) return;
 
+                // 檢查是否為自己更新（從 QuickBookingForm）
                 if (_suppressedItems.Contains(entryId))
                 {
-                    System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] PropertyChange 被抑制: {propName}");
-                    return;
+                    if (_lastUpdateFromBooking.TryGetValue(entryId, out DateTime lastUpdateTime))
+                    {
+                        if ((DateTime.Now - lastUpdateTime).TotalMilliseconds < SelfUpdateWindowMs)
+                        {
+                            // 2秒內的更新視為自己更新，跳過
+                            System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 跳過自己更新: {propName}");
+                            return;
+                        }
+                    }
+                    
+                    // 超過時間視為正常的 UI 變更，解除抑制
+                    _suppressedItems.Remove(entryId);
+                    _lastUpdateFromBooking.Remove(entryId);
+                    System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 解除抑制（超時）: {entryId}");
                 }
 
                 DateTime now = DateTime.Now;
@@ -146,28 +180,29 @@ namespace OutlookAddIn_meetingRoomInfo
 
             string roomIdToCheck = !string.IsNullOrEmpty(newRoomId) ? newRoomId : oldRoomId;
 
-            bool hasConflict = await CheckRoomAvailability(roomIdToCheck, newStart, newEnd, entryId);
-
-            if (hasConflict)
+            // 立即取消舊預約，避免自身時間衝突
+            if (!string.IsNullOrEmpty(oldSnapshot.RoomId))
             {
-                var result = ShowConflictDialog(roomIdToCheck, newStart, newEnd);
-                switch (result)
+                string userId = _addIn.GetCurrentUserId();
+                string userName = _addIn.GetCurrentUserName();
+                string userExt = _addIn.GetCurrentUserExt();
+
+                string oldCaseId = await GetCaseIdFromRentRecord(oldSnapshot.RoomId, userId, oldSnapshot.Start, oldSnapshot.End);
+                if (!string.IsNullOrEmpty(oldCaseId))
                 {
-                    case DialogResult.Yes:
-                        RestoreOriginalTime(appointment, oldSnapshot);
-                        break;
-                    case DialogResult.No:
-                        break;
+                    await CancelBooking(oldCaseId, oldSnapshot.RoomId, userId, userName, oldSnapshot.Start, oldSnapshot.End, appointment.Subject, userExt);
+                    System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 已取消舊預約: CaseId={oldCaseId}");
                 }
             }
-            else
-            {
-                await RebookMeetingRoom(appointment, oldSnapshot, newRoomId, newStart, newEnd);
-                UpdateSnapshot(appointment, newRoomId);
-            }
+
+            // 開啟選擇新時段對話框
+            ShowRoomDetails(roomIdToCheck, newStart.Date, oldSnapshot);
         }
 
-        private async Task<bool> CheckRoomAvailability(string roomId, DateTime start, DateTime end, string excludeEntryId)
+        /// <summary>
+        /// 檢查會議室是否可用，返回衝突記錄列表
+        /// </summary>
+        private async Task<List<RentRecord>> CheckRoomAvailability(string roomId, DateTime start, DateTime end, string excludeEntryId)
         {
             try
             {
@@ -230,7 +265,7 @@ namespace OutlookAddIn_meetingRoomInfo
                             {
                                 System.Diagnostics.Debug.WriteLine($"  衝突: {r.UserName} - {r.Subject} ({r.StartDate} - {r.EndDate})");
                             }
-                            return true;
+                            return roomRecords;
                         }
                         else
                         {
@@ -247,12 +282,12 @@ namespace OutlookAddIn_meetingRoomInfo
                     System.Diagnostics.Debug.WriteLine($"[CheckRoomAvailability] HTTP錯誤: {(int)response.StatusCode} {response.StatusCode}");
                 }
 
-                return false;
+                return null;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] CheckRoomAvailability 錯誤: {ex.Message}");
-                return false;
+                return null;
             }
         }
 
@@ -435,14 +470,14 @@ namespace OutlookAddIn_meetingRoomInfo
             }
         }
 
-        private DialogResult ShowConflictDialog(string roomId, DateTime start, DateTime end)
+        private DialogResult ShowConflictDialog(string roomId, DateTime start, DateTime end, List<RentRecord> conflictRecords)
         {
-            string message = $"會議室 {roomId} 在新時間段 ({start:HH:mm} - {end:HH:mm}) 已被預約！\n\n請選擇處理方式：";
-            string caption = "會議室時間衝突";
+            string message = "偵測到會議時間變更。\n舊預約已取消，請選擇新時段或還原。\n\n• 選擇新時段：查看當天預約並預約新時段\n• 還原為原時間：恢復原本的會議時間";
+            string caption = "選擇處理方式";
 
             var dialog = new Form();
             dialog.Text = caption;
-            dialog.Size = new Size(450, 220);
+            dialog.Size = new Size(450, 250);
             dialog.StartPosition = FormStartPosition.CenterScreen;
             dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
             dialog.MaximizeBox = false;
@@ -451,34 +486,298 @@ namespace OutlookAddIn_meetingRoomInfo
             var lblMessage = new Label();
             lblMessage.Text = message;
             lblMessage.Location = new Point(20, 20);
-            lblMessage.Size = new Size(400, 60);
+            lblMessage.Size = new Size(400, 100);
             dialog.Controls.Add(lblMessage);
+
+            var btnNewTime = new Button();
+            btnNewTime.Text = "選擇新時段";
+            btnNewTime.Location = new Point(20, 130);
+            btnNewTime.Size = new Size(130, 35);
+            btnNewTime.DialogResult = DialogResult.No;
+            dialog.Controls.Add(btnNewTime);
 
             var btnRestore = new Button();
             btnRestore.Text = "還原為原時間";
-            btnRestore.Location = new Point(20, 90);
-            btnRestore.Size = new Size(130, 30);
+            btnRestore.Location = new Point(160, 130);
+            btnRestore.Size = new Size(130, 35);
             btnRestore.DialogResult = DialogResult.Yes;
             dialog.Controls.Add(btnRestore);
 
-            var btnIgnore = new Button();
-            btnIgnore.Text = "仍然儲存";
-            btnIgnore.Location = new Point(160, 90);
-            btnIgnore.Size = new Size(130, 30);
-            btnIgnore.DialogResult = DialogResult.No;
-            dialog.Controls.Add(btnIgnore);
-
             var btnCancel = new Button();
             btnCancel.Text = "取消變更";
-            btnCancel.Location = new Point(300, 90);
-            btnCancel.Size = new Size(110, 30);
+            btnCancel.Location = new Point(300, 130);
+            btnCancel.Size = new Size(110, 35);
             btnCancel.DialogResult = DialogResult.Cancel;
             dialog.Controls.Add(btnCancel);
 
-            dialog.AcceptButton = btnRestore;
+            dialog.AcceptButton = btnNewTime;
             dialog.CancelButton = btnCancel;
 
             return dialog.ShowDialog();
+        }
+
+        private async void ShowRoomDetails(string roomId, DateTime date, AppointmentSnapshot snapshot)
+        {
+            try
+            {
+                var roomsTask = FetchMeetingRooms();
+                var recordsTask = FetchRoomRecords(roomId, date);
+
+                await Task.WhenAll(roomsTask, recordsTask);
+
+                var rooms = await roomsTask;
+                var records = await recordsTask;
+
+                var meetingRecords = records.Select(r => new MeetingRecord
+                {
+                    UserName = r.UserName,
+                    RoomId = r.RoomId,
+                    StartDate = r.StartDate,
+                    EndDate = r.EndDate,
+                    Subject = r.Subject,
+                    Remark = r.Remark
+                }).ToList();
+
+                using (var bookingForm = new QuickBookingForm(
+                    meetingRecords, 
+                    rooms, 
+                    true,
+                    snapshot.RoomId,
+                    null,
+                    snapshot.Start.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    snapshot.End.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    snapshot.Subject,
+                    snapshot.EntryID,
+                    null, null))
+                {
+                    bookingForm.SetSelectedDate(date);
+                    bookingForm.SetSelectedRoom(roomId);
+
+                    bookingForm.OnBookingUpdated = (newRoomId, newRoomDisplayName, newStart, newEnd) =>
+                    {
+                        UpdateAppointmentTime(snapshot, newRoomId, newRoomDisplayName, newStart, newEnd);
+                    };
+
+                    bookingForm.OnRestoreCompleted = () =>
+                    {
+                        RestoreOriginalTimeWithoutBooking(snapshot);
+                    };
+
+                    bookingForm.ShowDialog();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"無法取得預約資料: {ex.Message}", "錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void RestoreOriginalTimeWithoutBooking(AppointmentSnapshot snapshot)
+        {
+            try
+            {
+                var session = _addIn.Application.Session;
+                var calendarFolder = session.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+                var items = calendarFolder.Items;
+
+                Outlook.AppointmentItem targetAppointment = null;
+                foreach (Outlook.AppointmentItem appt in items)
+                {
+                    if (appt.EntryID == snapshot.EntryID)
+                    {
+                        targetAppointment = appt;
+                        break;
+                    }
+                }
+
+                if (targetAppointment == null)
+                {
+                    MessageBox.Show("找不到對應的會議項目", "錯誤", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // 先加入抑制，防止回填觸發重複事件
+                _suppressedItems.Add(snapshot.EntryID);
+                _lastUpdateFromBooking[snapshot.EntryID] = DateTime.Now;
+
+                // 還原時間但不需要重新預約（因為已經取消了，現在只是還原時間）
+                targetAppointment.Start = snapshot.Start;
+                targetAppointment.End = snapshot.End;
+                targetAppointment.Location = snapshot.Location;
+                targetAppointment.Save();
+
+                // 還原後更新快照，讓後續事件比對時判定「無變更」
+                _snapshots[snapshot.EntryID] = new AppointmentSnapshot
+                {
+                    EntryID = snapshot.EntryID,
+                    Start = snapshot.Start,
+                    End = snapshot.End,
+                    Location = snapshot.Location,
+                    RoomId = snapshot.RoomId,
+                    Subject = snapshot.Subject,
+                    IsOrganizer = snapshot.IsOrganizer,
+                    CapturedAt = DateTime.Now
+                };
+
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 已還原時間並同步更新快照");
+
+                // 延遲移除抑制
+                var entryIdToRemove = snapshot.EntryID;
+                Task.Delay(3000).ContinueWith(_ =>
+                {
+                    _suppressedItems.Remove(entryIdToRemove);
+                    _lastUpdateFromBooking.Remove(entryIdToRemove);
+                    System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 還原後已延遲移除抑制");
+                });
+
+                MessageBox.Show("已還原為原始時間。", "還原成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] RestoreOriginalTimeWithoutBooking 錯誤: {ex.Message}");
+                MessageBox.Show($"還原失敗: {ex.Message}", "錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void UpdateAppointmentTime(AppointmentSnapshot snapshot, string newRoomId, string newRoomDisplayName, DateTime newStart, DateTime newEnd)
+        {
+            try
+            {
+                var session = _addIn.Application.Session;
+                var calendarFolder = session.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+                var items = calendarFolder.Items;
+
+                Outlook.AppointmentItem targetAppointment = null;
+                foreach (Outlook.AppointmentItem appt in items)
+                {
+                    if (appt.EntryID == snapshot.EntryID)
+                    {
+                        targetAppointment = appt;
+                        break;
+                    }
+                }
+
+                if (targetAppointment == null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 找不到Appointment: {snapshot.EntryID}");
+                    MessageBox.Show("找不到對應的會議項目", "錯誤", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                _suppressedItems.Add(snapshot.EntryID);
+                _lastUpdateFromBooking[snapshot.EntryID] = DateTime.Now;
+
+                targetAppointment.Start = newStart;
+                targetAppointment.End = newEnd;
+                targetAppointment.Location = newRoomDisplayName;
+                targetAppointment.Save();
+
+                // 回填後立即更新快照，讓後續 PropertyChange 比對時發現「無變更」而自然跳過
+                _snapshots[snapshot.EntryID] = new AppointmentSnapshot
+                {
+                    EntryID = snapshot.EntryID,
+                    Start = newStart,
+                    End = newEnd,
+                    Location = newRoomDisplayName,
+                    RoomId = newRoomId,
+                    Subject = snapshot.Subject,
+                    IsOrganizer = snapshot.IsOrganizer,
+                    CapturedAt = DateTime.Now
+                };
+
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 已更新Appointment時間: {newStart} - {newEnd}");
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 已同步更新快照，後續事件將判定無變更");
+
+                // 延遲移除抑制，確保所有非同步事件（PropertyChange / CalendarItemChange）都被攔截
+                var entryIdToRemove = snapshot.EntryID;
+                Task.Delay(3000).ContinueWith(_ =>
+                {
+                    _suppressedItems.Remove(entryIdToRemove);
+                    _lastUpdateFromBooking.Remove(entryIdToRemove);
+                    System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] 已延遲移除抑制: {entryIdToRemove.Substring(0, Math.Min(8, entryIdToRemove.Length))}");
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] UpdateAppointmentTime錯誤: {ex.Message}");
+                MessageBox.Show($"更新Outlook會議失敗: {ex.Message}", "錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async Task<List<MeetingRoom>> FetchMeetingRooms()
+        {
+            try
+            {
+                string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/getroomlist";
+                HttpResponseMessage response = await client.GetAsync(apiUrl);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = await response.Content.ReadAsStringAsync();
+                    return JsonConvert.DeserializeObject<List<MeetingRoom>>(result) ?? new List<MeetingRoom>();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] FetchMeetingRooms 錯誤: {ex.Message}");
+            }
+
+            return GetDefaultRooms();
+        }
+
+        private List<MeetingRoom> GetDefaultRooms()
+        {
+            return new List<MeetingRoom>
+            {
+                new MeetingRoom { RoomId = "R001", Name = "PARIS(原國際會議室)", Sort = 1, Remark = "財務部旁", Disable = false },
+                new MeetingRoom { RoomId = "R002", Name = "TAIPEI(原大會議室)", Sort = 2, Remark = "櫃檯後方大會議室", Disable = false },
+                new MeetingRoom { RoomId = "R003", Name = "SEOUL(首爾會議室)", Sort = 3, Remark = "首爾會議室、軟體部前面", Disable = false },
+                new MeetingRoom { RoomId = "R005", Name = "SAN JOSE(聖荷西會議室)", Sort = 5, Remark = "接待中心旁邊，5~6人", Disable = false },
+                new MeetingRoom { RoomId = "R006", Name = "LONDON(原業務會議室)", Sort = 6, Remark = "業務區(可容納8-10人)", Disable = false },
+                new MeetingRoom { RoomId = "R007", Name = "Zoom", Sort = 7, Remark = "Zoom 視訊會議室", Type = "虛擬", Disable = false },
+                new MeetingRoom { RoomId = "R008", Name = "建康廠-達文西", Sort = 8, Remark = "4~6人", Type = "健康廠", Disable = false },
+                new MeetingRoom { RoomId = "R009", Name = "建康廠-拉菲爾", Sort = 9, Remark = "4~6人", Type = "健康廠", Disable = false },
+                new MeetingRoom { RoomId = "R010", Name = "建康廠-米開朗基羅", Sort = 10, Remark = "大會議室，12~15人", Type = "健康廠", Disable = false }
+            };
+        }
+
+        private async Task<List<RentRecord>> FetchRoomRecords(string roomId, DateTime date)
+        {
+            try
+            {
+                string apiUrl = "http://192.168.0.13:100/api/MeetingRoom/getRentRecord";
+
+                var payload = new
+                {
+                    CaseId = "",
+                    RoomId = roomId,
+                    UserId = "",
+                    UserName = "",
+                    StartDate = date.Date.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    EndDate = date.Date.AddDays(1).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    CreateTime = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                    Subject = "",
+                    Remark = "",
+                    Cancel = false
+                };
+
+                string jsonPayload = JsonConvert.SerializeObject(payload);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response = await client.PostAsync(apiUrl, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    string result = await response.Content.ReadAsStringAsync();
+                    return JsonConvert.DeserializeObject<List<RentRecord>>(result) ?? new List<RentRecord>();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] FetchRoomRecords 錯誤: {ex.Message}");
+            }
+
+            return new List<RentRecord>();
         }
 
         private void RestoreOriginalTime(Outlook.AppointmentItem appointment, AppointmentSnapshot snapshot)
@@ -595,6 +894,13 @@ namespace OutlookAddIn_meetingRoomInfo
 
             string entryId = appointment.EntryID;
             if (string.IsNullOrEmpty(entryId)) return;
+
+            // 檢查是否為自己回填觸發的變更（封堵第二條觸發路徑）
+            if (_suppressedItems.Contains(entryId))
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppointmentMonitor] CalendarItemChange 被抑制（回填觸發）: {entryId.Substring(0, Math.Min(8, entryId.Length))}");
+                return;
+            }
 
             if (!_snapshots.ContainsKey(entryId))
             {

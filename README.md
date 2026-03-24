@@ -26,6 +26,13 @@
 - 自訂日期範圍查詢
 - 匯出 CSV 報表
 
+### 5. 會議變更監聽（AppointmentMonitor）
+- 自動偵測使用者在 Outlook 行事曆中修改會議時間或地點
+- 偵測到變更時自動取消舊的會議室預約
+- 開啟時段選擇視窗讓使用者選擇新時段或還原為原時間
+- 選擇新時段後自動回填至 Outlook 會議並同步更新預約
+- 三層防護機制防止回填觸發重複監聽（快照同步 + 抑制標記 + 時間窗口）
+
 ## 專案架構
 
 ```
@@ -33,10 +40,13 @@ OutlookAddIn_meetingRoomInfo/
 ├── ThisAddIn.cs              # Add-in 主要入口點
 ├── MeetingRoomRibbon.cs      # Ribbon UI 與功能邏輯
 ├── QuickBookingForm.cs       # 快速預約視窗
+├── AppointmentMonitor.cs     # 會議變更監聽與自動重新預約
+├── AppointmentSnapshot.cs    # 會議快照與資料模型定義
 ├── MeetingRoomResultForm.cs  # 查詢結果視窗
 ├── DateRangeForm.cs          # 日期選擇對話框
 ├── MeetingRecord.cs          # 資料模型類別
 ├── MeetingRoom.cs            # 會議室資料模型
+├── RoomComboItem.cs          # 會議室下拉選單項目
 └── packages.config           # NuGet 套件設定
 ```
 
@@ -63,13 +73,29 @@ OutlookAddIn_meetingRoomInfo/
   - `FetchMeetingRoomRecords()`: 取得預約記錄
 
 ### QuickBookingForm.cs
-- **用途**: 快速預約介面
+- **用途**: 快速預約介面（支援新預約、更新、還原三種模式）
 - **主要功能**:
   - 顯示會議室下拉選單
   - 日期選擇器（支援切換日期自動載入資料）
-  - DataGridView 顯示各時段狀態（可預約/已占用）
+  - DataGridView 顯示各時段狀態（綠色=可預約、紅色=已占用、灰色=已逾時）
   - 顯示預約人與會議主題
-  - 多時段連續選擇預約
+  - 多時段連續拖曳選擇預約
+  - 更新模式：會議變更時重新選擇時段
+  - 還原模式：自動選中原時段並還原
+
+### AppointmentMonitor.cs
+- **用途**: 監聽 Outlook 行事曆會議變更，自動同步會議室預約
+- **主要功能**:
+  - `RegisterAppointment()`: 註冊會議監聽，記錄快照
+  - `Appointment_PropertyChange`: 偵測 Start/End/Location 變更（含 Debounce 500ms）
+  - `HandleTimeChangeInternal()`: 取消舊預約，開啟選擇新時段對話框
+  - `UpdateAppointmentTime()`: 回填新時段至 Outlook，同步更新快照
+  - `RestoreOriginalTimeWithoutBooking()`: 還原為原始時間
+  - `HandleCalendarItemChange()`: 處理 CalendarItems.ItemChange 事件
+- **防重複觸發機制**（三層防護）:
+  - Layer 1: `_suppressedItems` 標記 + 延遲 3 秒移除
+  - Layer 2: `SelfUpdateWindowMs` 5 秒時間窗口
+  - Layer 3: 快照同步 — 回填後更新 `_snapshots`，讓 `IsTimeChanged()` 返回 false
 
 ### MeetingRoomResultForm.cs
 - **用途**: 查詢結果顯示介面
@@ -105,6 +131,21 @@ public class RentRecord
     public string EndDate { get; set; }
     public string Subject { get; set; }
     public bool Cancel { get; set; }
+}
+```
+
+### AppointmentSnapshot
+```csharp
+public class AppointmentSnapshot
+{
+    public string EntryID { get; set; }
+    public DateTime Start { get; set; }
+    public DateTime End { get; set; }
+    public string Location { get; set; }
+    public string RoomId { get; set; }
+    public string Subject { get; set; }
+    public bool IsOrganizer { get; set; }
+    public DateTime CapturedAt { get; set; }
 }
 ```
 
@@ -232,6 +273,12 @@ Response:
 - 使用 `async/await` 進行非同步 API 呼叫
 - 在事件處理器中使用 `.GetAwaiter().GetResult()` 進行同步等待
 
+### 5. 會議變更回填防重複觸發
+- 回填 Outlook 會議時間後，Outlook 會觸發 `PropertyChange` 和 `CalendarItems.ItemChange` 兩條事件路徑
+- 使用「快照同步」策略：回填後立即更新 `_snapshots`，讓後續事件的 `IsTimeChanged()` 返回 false
+- 搭配 `_suppressedItems` 延遲 3 秒移除和 5 秒 `SelfUpdateWindowMs` 作為安全網
+- `QuickBookingForm` 在回調前先 `Hide()` 再 `Close()`，避免 Outlook 原生「傳送更新」對話框阻塞表單
+
 ## 安裝需求
 
 ### 開發環境
@@ -282,6 +329,27 @@ Response:
   - 移除發送會議時的重複預約檢查（已在確認時完成）
 - **Location 欄位簡化**：只填入會議室名稱（不含 RoomId），避免主旨被截斷
 - **已逾時時段顯示**：灰色標示已過期的時段，但仍顯示預約資訊
+
+### v1.4
+- **快速預約 ListView 增強**：
+  - 新增「預約人」欄位，顯示已占用時段的預約者姓名
+  - 時段限制在 08:00 - 18:30 範圍內
+  - 支援拖曳連續選擇多個時段
+
+### v1.5
+- **會議變更監聽功能** (`AppointmentMonitor`)：
+  - 自動偵測使用者從 Outlook 行事曆修改會議時間/地點
+  - 偵測到變更時自動取消舊預約，開啟時段選擇視窗
+  - 支援「選擇新時段」和「還原為原時間」兩種處理方式
+  - 回填新時段至 Outlook 會議並同步更新預約記錄
+- **防重複觸發修復**：
+  - 快照同步策略：回填後更新 `_snapshots`，後續事件自然判定無變更
+  - `HandleCalendarItemChange` 加入抑制檢查（封堵第二條觸發路徑）
+  - `_suppressedItems` 延遲 3 秒移除，確保非同步事件被攔截
+  - `SelfUpdateWindowMs` 從 2 秒延長至 5 秒
+- **表單阻塞修復**：
+  - `QuickBookingForm` 在回調前先 `Hide()` 再 `Close()`
+  - 避免 Outlook 原生「儲存變更並傳送更新」對話框阻塞 ListView
 
 ## 作者與維護
 
